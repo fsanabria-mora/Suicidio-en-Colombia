@@ -3,7 +3,7 @@ Este repositorio contiene los principales scripts de Quarto utilizados en esta i
 
 ## Contenido
 - *fase_1.qmd*: script correspondiente a la fase 1 del estudio —análisis descriptivo de las series de tiempo—.
-- *fase_2.qmd: script correspondiente a la fase 2 del estudio —análisis de intervención para evaluar el impacto de la pandemia por COVID–19 sobre la serie de suicidio—.
+- *fase_2.qmd*: script correspondiente a la fase 2 del estudio —análisis de intervención para evaluar el impacto de la pandemia por COVID–19 sobre la serie de suicidio—.
 - *asoc_vmipc.qmd*: script ejemplo del análisis de búsqueda de asociaciones entre las series (fase 3), en este caso, entre la serie de suicidio y la variación mensual del IPC.
 - *tasas_ciclos.xlsx*: base de datos de las tasas de mortalidad por suicidio (incluyendo subgrupos).
 - *vars_ns2_clim.xlsx* y *vars_ns3.xlsx*: bases que contienen los datos de las series económicas y climáticas nacionales utilizadas en la fase 3 de la investigación.
