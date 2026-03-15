@@ -1,9 +1,10 @@
 # Scripts de Quarto —*El comportamiento del suicidio en Colombia: un análisis de series de tiempo*—
-Este repositorio contiene los principales scripts de Quarto utilizados en esta investigación. 
+Este repositorio contiene los principales scripts de Quarto utilizados en esta investigación.
+Serie *general* hace referencia a la serie de tiempo correspondiente a la tasa de mortalidad por suicidio nacional (no desagregada por subgrupos).
 
 ## Contenido
-- *fase_1.qmd*: script correspondiente a la fase 1 del estudio —análisis descriptivo de las series de tiempo—.
-- *fase_2.qmd*: script correspondiente a la fase 2 del estudio —análisis de intervención para evaluar el impacto de la pandemia por COVID–19 sobre la serie general (nacional) de suicidio—.
+- *fase_1.qmd*: script correspondiente a la fase 1 del estudio —análisis descriptivo de la serie general de suicidio—.
+- *fase_2.qmd*: script correspondiente a la fase 2 del estudio —análisis de intervención para evaluar el impacto de la pandemia por COVID–19 sobre la serie general de suicidio—.
 - *asoc_vmipc.qmd*: script ejemplo del análisis de búsqueda de asociaciones entre las series (fase 3), en este caso, entre la serie de suicidio y la variación mensual del IPC.
 - *tasas_ciclos.xlsx*: base de datos de las tasas de mortalidad por suicidio (incluyendo subgrupos).
 - *vars_ns2_clim.xlsx* y *vars_ns3.xlsx*: bases que contienen los datos de las series económicas y climáticas nacionales utilizadas en la fase 3 de la investigación.
