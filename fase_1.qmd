@@ -1,0 +1,416 @@
+---
+title: "fase_1: análisis descriptivo de las series de tiempo"
+format: html
+editor: source
+---
+
+# Tendencia, variabilidad y estacionalidad
+
+A continuación, se presenta el análisis de tendencia, variabilidad y estacionalidad de la serie correspondiente a la tasa mensual de mortalidad por suicidio en Colombia (2010–2022).
+
+```{r}
+#| label: paquetes
+#| message: false
+#| warning: false
+
+pacman::p_load(zoo, haven, dplyr, ggplot2, timetk, tsibble, readxl, fabletools, fable, lubridate, forecast, MASS, uroot, urca, feasts, seastests, aTSA, tidyr, biwavelet, flextable, janitor, scales, epikit, gtsummary, kableExtra, knitr, purrr, stringr, patchwork, cowplot, tseries, tsoutliers, anomalize, tibbletime, tsutils, astsa, fUnitRoots, MTS)
+
+```
+
+## Datos
+
+```{r análisis descriptivo}
+#| results: 'hide'
+#| message: false
+
+setwd("C:/Users/USUARIO/OneDrive/msc_epi/tesis/doc_final")
+
+#tasa general
+general <- read_excel("tasas_ciclos.xlsx")
+invisible(general$fecha_mes <- as.Date(with(general, paste(año, mes, "01", sep = "-")), "%Y-%m-%d"))
+
+```
+
+## Tendencia y variabilidad 
+
+```{r}
+#| label: fig-tend_general
+#| fig-cap: "Tasa de mortalidad por suicidio en Colombia (general)."
+#| results: 'hide'
+#| message: false
+#| fig.show: 'asis'
+#| fig.height: 5
+#| fig.width: 9
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+#Seleccionamos el periodo de interés
+general_tbl <- general %>%
+  dplyr::select(fecha_mes, general) %>% 
+  subset(fecha_mes >= "2010-01-01")
+
+#Objetos tbl y tsbl
+general_tbl1 <- general_tbl
+year_inic <- 2010
+
+general_tbl1$fecha_mes <- yearmonth(general_tbl1$fecha_mes)
+general_tsbl <- as_tsibble(general_tbl1)
+
+#Gráfica
+general_tbl %>% 
+  timetk::plot_time_series(
+    fecha_mes, general, .interactive = FALSE, .plotly_slider = FALSE, .line_color = "black", .smooth_color = "springgreen3") +
+   scale_x_date(date_labels = "%Y", date_breaks = "year") + 
+  scale_y_continuous(n.breaks = 6) + 
+  labs(
+    title = "",
+    x = "Año",
+    y = "Tasa de mortalidad por suicidio*",
+    caption = "*Casos por 100,000 habitantes."
+  ) + 
+  theme(
+    plot.caption.position = "plot",
+    plot.caption = element_text(hjust = 0, size = 10),
+    axis.title.x = element_text(margin = margin(t = 11), face = "bold", size = 11),
+    axis.title.y = element_text(margin = margin(r = 11), face = "bold", size = 11),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10)
+  )
+
+#ts
+suic_ts <- ts(general_tbl1$general, start = c(year_inic, 1), frequency = 12)
+
+```
+
+### Transformación de Box–Cox y diferenciación regular de primer orden
+
+```{r}
+#| label: log_diff
+#| include: false
+#| message: false
+#| warning: false
+
+BoxCox.lambda(suic_ts)
+suic_ts_log <- box_cox_vec(suic_ts, lambda = 0)
+#0.1847464
+
+ar(diff(suic_ts_log))
+adf = ur.df(suic_ts_log, type = "none", lags = 4)
+summary(adf) 
+#no se rechaza la H0 de presencia de raíz unitaria
+
+aTSA::adf.test(suic_ts_log, nlag = 5)
+
+general_tbl <- general_tbl |>
+  mutate(tasa_general_boxcox = box_cox(general, lambda = 0))
+
+```
+
+```{r}
+#| label: fig-log_diff
+#| fig-cap: "Tasa de mortalidad por suicidio en Colombia (general) con transformación de Box-Cox logarítmica y diferenciación de primer orden*."
+#| results: 'hide'
+#| message: false
+#| fig.show: 'asis'
+#| fig.height: 5
+#| fig.width: 9
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+
+#Debido a que la serie tiene raíz unitaria, procedemos a eliminar la tendencia mediante diferenciación
+general_tbl <- general_tbl |> 
+  mutate(tasa_general_boxcox_dif = tasa_general_boxcox - lag(tasa_general_boxcox))
+
+#Objetos tbl y tsbl
+general_tbl1 <- general_tbl
+general_tbl1$fecha_mes <- yearmonth(general_tbl1$fecha_mes)
+general_tsbl <- as_tsibble(general_tbl1)
+
+#Gráfica
+general_tbl1 <- general_tbl1 |>
+  mutate(fecha_mes_date = as.Date(fecha_mes))
+
+general_tbl1 |> 
+  ggplot(aes(x = fecha_mes_date, y = tasa_general_boxcox_dif)) + 
+  geom_line(colour = "blue4", linewidth = 0.7) + 
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "2 year") + 
+  scale_y_continuous(n.breaks = 6) + 
+  labs(
+    x = "Año", 
+    y = "Tasa de mortalidad por suicidio*") + 
+  theme(
+    axis.title.y = element_text(size = 11, face = "bold", margin = margin(t=0, r=7, b=0, l=0, unit = "pt")),
+    axis.title.x = element_text(size = 11, face = "bold", margin = margin(t=7, r=0, b=1, l=0, unit = "pt")),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    panel.background = element_rect(fill = "white", color = "gray"),
+    panel.grid.major = element_line(color = "gray"))
+
+#Objeto ts
+general_ts_log_dif <- ts(general_tsbl$tasa_general_boxcox_dif, start = c(year_inic, 1), frequency = 12)
+
+```
+
+## Estacionalidad
+
+### Exploración gráfica
+
+#### Subseries mensuales
+
+```{r}
+#| label: fig-subseries
+#| fig-cap: "Gráfico de subseries mensuales (tasa con transformación de Box-Cox logarítmica y diferenciación de primer orden*)."
+#| results: 'hide'
+#| message: false
+#| fig.show: 'asis'
+#| fig.height: 5
+#| fig.width: 9
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+monthplot(general_tsbl$tasa_general_boxcox_dif, 
+          ylab = "Tasa de mortalidad por suicidio*", 
+          xlab = "Mes", 
+          col = "royalblue4",
+          col.base = "red")
+
+```
+
+#### Gráfico de Cajas y bigotes
+
+```{r}
+#| label: fig-cajas
+#| fig-cap: "Diagrama de cajas y bigotes (tasa con transformación de Box-Cox logarítmica y diferenciación de primer orden*)."
+#| results: 'hide'
+#| message: false
+#| fig.show: 'asis'
+#| fig.height: 5
+#| fig.width: 9
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+meses_abreviados <- c(
+  "enero" = "Ene.", "febrero" = "Feb.", "marzo" = "Mar.", "abril" = "Abr.", "mayo" = "May.", "junio" = "Jun.", "julio" = "Jul.", "agosto" = "Ago.", "septiembre" = "Sep.", "octubre" = "Oct.", "noviembre" = "Nov.", "diciembre" = "Dic."
+)
+
+general_tbl1 |>
+  plot_seasonal_diagnostics(.date_var = fecha_mes_date, 
+                            .value = tasa_general_boxcox_dif,
+                            .feature_set = c("month.lbl"), 
+                            .x_lab = "Mes", 
+                            .y_lab = "Tasa de mortalidad por suicidio*", 
+                            .interactive = FALSE,
+                            .geom_color = "royalblue4", 
+                            .geom_outlier_color = "red4") +
+  ggtitle("") +
+  scale_x_discrete(labels = meses_abreviados) + #meses abreviados
+  scale_y_continuous(n.breaks = 6) + 
+  theme(
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11),
+    strip.text = element_blank(),        # quita el texto del strip (month.lbl)
+    strip.background = element_blank()
+  )
+
+
+```
+
+#### Gráfico por años
+
+```{r}
+#| label: fig-anual
+#| fig-cap: "Gráfico por años (tasa con transformación de Box-Cox logarítmica y diferenciación de primer orden*)."
+#| results: 'hide'
+#| message: false
+#| fig.show: 'asis'
+#| fig.height: 5
+#| fig.width: 9
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+
+#other colors
+library(RColorBrewer)
+
+color_year <- brewer.pal(12, "Paired")
+
+ggseasonplot(general_ts_log_dif, ylab = "Tasa de mortalidad por suicidio*", 
+             xlab = "Mes", 
+             season.labels = month.abb, 
+             labelgap = 0.5, 
+             main = "", 
+             col = color_year) + 
+  scale_y_continuous(n.breaks = 6) + 
+  theme(
+    legend.text = element_text(size = 11),
+    legend.title = element_text(size = 11),
+    legend.key.size = unit(1.5, "lines"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+```
+
+### Pruebas estadísticas
+
+Sobre la serie con transformación logarítmica y diferenciada. 
+
+```{r}
+#| label: seastests
+#| include: false
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+fried(general_ts_log_dif, freq = 12, residuals = TRUE)
+seasdum(general_ts_log_dif, freq = 12, autoarima = TRUE)
+combined_test(general_ts_log_dif, freq = 12)
+
+```
+
+```{r}
+#| label: objetos necesarios
+#| include: false
+#| message: false
+#| warning: false
+#| results: 'hide'
+
+#todas_tbl contiene todas las series originales de 2010 a 2022
+todas_tbl <- general |>
+  subset(fecha_mes >= "2010-01-01")
+
+#Objetos tbl y tsbl
+todas_tbl1 <- todas_tbl
+year_inic <- 2010
+
+todas_tbl1$fecha_mes <- yearmonth(todas_tbl1$fecha_mes)
+todas_tsbl <- as_tsibble(todas_tbl1)
+
+
+#objeto ts
+gen_ts <- ts(todas_tbl1$general, start = c(year_inic, 1), frequency = 12)
+
+#transformaciones
+
+BoxCox.lambda(gen_ts)
+#0.1847464
+gen_ts_log <- box_cox_vec(gen_ts, lambda = 0)
+
+#raíces unitarias y diff
+
+##general
+ar(diff(gen_ts_log))
+adf = ur.df(gen_ts_log, type = "none", lags = 4)
+summary(adf) 
+#no se rechaza la H0 de presencia de raíz unitaria
+
+aTSA::adf.test(gen_ts_log, nlag = 5)
+
+todas_tbl <- todas_tbl |>
+  mutate(general_boxcox = box_cox(general, lambda = 0))
+
+todas_tbl <- todas_tbl |> 
+  mutate(general_boxcox_dif = general_boxcox - lag(general_boxcox))
+
+
+#Objetos tbl y tsbl
+todas_tbl1 <- todas_tbl
+todas_tbl1$fecha_mes <- yearmonth(todas_tbl1$fecha_mes)
+todas_tsbl <- as_tsibble(todas_tbl1)
+
+
+#objeto ts con transf. y diff
+gen_ts_log_dif <- ts(todas_tsbl$general_boxcox_dif, start = c(year_inic, 1), frequency = 12)
+
+```
+
+### Modelo ARIMA
+
+Se utilizaron modelos ARIMA para validar los patrones estacionales identificados. Para el caso de la serie general, con base en la inspección de los gráficos ACF y PACF —siguiendo la metodología Box–Jenkins—, se especificó un modelo ARIMA (0,1,1) con 11 variables indicadoras mensuales, de la forma:
+$$
+log(Z_t) - log(Z_{t-1}) = \theta_1 \ \varepsilon_{t-1} \ + \ \gamma_2 \ d_{2,t} \ + \gamma_3 \ d_{3,t} \ + \ ... \ + \ \gamma_{11} \ d_{{11},t} \ + \ \gamma_{12} \ d_{{12},t} \ + \ \varepsilon_t.
+$$
+En este modelo, $\{Z_t\}$ representa el proceso estocástico para la tasa de suicidio observada y $\{\varepsilon_t\}$ corresponde al término del error (que se asume ruido blanco). Las variables $d_{i,t}$ son las indicadoras o *dummies* mensuales, definidas como $d_{i,t} = 1$ cuando $t$ está en el mes $i$ y cero de cualquier otra forma. Con enero como mes de referencia, los coeficientes $\gamma_i$ se interpretan en términos del efecto asociado al mes $i$ respecto a enero, es decir, que, en promedio, determinado mes presenta tasas más altas o más bajas que enero.
+
+```{r}
+#| label: coef_mod
+#| include: false
+#| warning: false
+#| message: false
+#| results: asis
+
+mod_gen <- todas_tsbl |> model(
+  gen_suic = ARIMA(general_boxcox ~ season() + pdq(0, 1, 1) + PDQ(0, 0, 0)))
+
+mod_gen |> 
+  select(gen_suic) |>
+  coef()
+
+```
+
+La significación estadística de los parámetros asociados a las variables indicadoras confirma la presencia de estacionalidad explicada por variables *dummy*. En promedio, enero exihibió las tasas más altas. 
+
+#### Análisis de residuos
+
+```{r}
+#| label: resid
+#| include: false
+#| warning: false
+#| message: false
+#| results: asis
+
+
+resid_gen <- mod_gen |>
+  dplyr::select(gen_suic) |> 
+  residuals()
+
+resid_gen |>
+  autoplot()
+
+residuales <- resid_gen |>
+  dplyr::select(".resid") |> 
+  drop_na()
+
+#residuos ts
+residuales_ts <- ts(residuales$.resid, start = c(year_inic, 1), frequency = 12)
+
+#ACF, PACF y pruebas
+acf(residuales_ts)
+pacf(residuales_ts)
+plot(residuales_ts)
+
+jarque.bera.test(residuales_ts)
+Box.test(residuales_ts, lag = 20,type = "Ljung")
+t.test(residuales_ts)
+
+
+#CUSUM Y CUSUMSQ
+res = residuales_ts
+cum = cumsum(res)/sd(res) ###serie cusum estandarizada = suma acumulativa de los residuos / sd de los residuos
+N = length(res) ###total de observaciones de la serie de residuos (12 meses * años) - dec 2022 ### de 2010 a 2022 hay 156 meses / 2 = 78 ### de 2004 a 2022 hay 228 meses / 2 = 114
+cumq = cumsum(res^2)/sum(res^2) ###serie cusumq (cambios en la varianza) = suma acumulativa de los residuos al cuadrado / suma total de los residuos al cuadrado
+Af = 0.948 ###Cuantil crítico del 95% para la estadística cusum
+co = 0.128945 ###Valor del cuantil crítico aproximado para cusumsq para n/2 - depende del tamaño de la muestra
+### para 2010 a 2022 = (0.12970 + 0.12819)/2 = 0.128945
+### para 2004 a 2022 = podríamos usar el de 110 = 0.10997
+LS = Af*sqrt(N) + 2*Af*c(1:length(res))/sqrt(N)
+LI = -LS
+LQS = co + (1:length(res))/N
+LQI = -co + (1:length(res))/N
+
+plot(cum,type="l",ylim=c(min(LI),max(LS)),xlab="t",ylab="",main="CUSUM")
+lines(LS,type="S",col="red")
+lines(LI,type="S",col="red")
+#CUSUMSQ
+plot(cumq,type="l",xlab="t",ylab="",main="CUSUMSQ")                      
+lines(LQS,type="S",col="red")
+lines(LQI,type="S",col="red")
+
+```
+
+Se cumplen los supuestos: no hay evidencia de autocorrelación remanente ni de violación a la normalidad; tampoco se identifican indicios de inestabilidad estructural. 
