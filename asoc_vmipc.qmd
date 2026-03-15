@@ -1,0 +1,816 @@
+---
+title: "Búsqueda de asociaciones entre la serie de suicidios y la variación mensual del IPC"
+format: html
+toc: true
+toc-title: "Tabla de contenido"
+code-overflow: wrap
+fig-align: center
+fig-width: 9
+editor: source
+---
+
+```{r}
+#| label: paquetes
+#| message: false
+#| warning: false
+
+library(forecast)
+library(tidyverse)
+library(tsibble)
+library(feasts)
+library(fable)
+library(readxl)
+library(stats)
+library(anomalize)
+library(tibbletime)
+
+```
+
+La base de datos `vars_ns3` es una copia de `vars_ns2`, pero tiene las columnas ordenadas. 
+
+```{r}
+#| label: base
+
+setwd("C:/Users/USUARIO/OneDrive/msc_epi/tesis/r_tesis_art/association_analysis")
+ns <- read_excel("vars_ns3.xlsx")
+
+#fecha
+ns$date_month <- as.Date(with(ns, paste(year, month, "01", sep = "-")), "%Y-%m-%d")
+year_inic <- 2010
+
+```
+
+## Exploración visual
+
+Estas gráficas corresponden a la serie de suicidios sin estacionalidad, con transformación log y diferenciada, y a la serie de la variación mensual del IPC desestacionalizada y diferenciada (sin transformación). 
+
+Recordar que:
+- `vm_ipc`: serie de la variación mensual del IPC original
+- `vmipc_ns`: serie *sin estacionalidad*
+- `vmipc_dif`: serie *sin estacionalidad y diferenciada*
+
+Y para la serie de suicidios:
+- `suic_origin`: serie de la tasa global de suicidios original
+- `suic_ns`: serie de la tasa global de suicidios *sin estacionalidad*
+- `suic_log`: serie de la tasa global de suicidios *con transformación logarítmica*
+- `suic_ns_log`: serie *sin estacionalidad y con transformación logarítmica*
+- `suic_dif`: serie *sin estacionalidad, con transformación log y diferenciada*
+
+El análisis comienza con las series diferenciadas, buscando estacionariedad, con el objetivo de disminuir el riesgo de encontrar relaciones espurias. 
+
+```{r}
+#| label: gráficas
+
+#tbl
+suic_ipc_tbl <- tibble(ns)
+
+suic_ipc_tsbl <- as_tsibble(suic_ipc_tbl, index = date_month)
+suic_ipc_tsbl <- suic_ipc_tsbl |>
+  mutate(date_month = yearmonth(date_month))
+tsibble::interval(suic_ipc_tsbl) #mensual
+
+#primera
+suic_ipc_tsbl %>% 
+  pivot_longer(c(suic_dif, vmipc_dif), 
+               names_to = "var", values_to = "value") |> 
+  ggplot(aes(x = date_month, y = value)) +
+  geom_line() +
+  facet_grid(vars(var), scales = "free_y") +
+  labs(
+    title = "Suicidios y variación mensual del IPC",
+    subtitle = "Series sin estacionalidad y diferenciadas (solo la serie de suicidios tiene transformación log)",
+    x = "Mes",
+    y = "Series"
+    )
+
+#otra gráfica
+suic_ipc_tsbl |>
+  pivot_longer(c(suic_dif, vmipc_dif), names_to = "Series") |>
+  autoplot(value) +
+  labs(
+    x = "Mes",
+    y = "Series"
+    )
+
+```
+
+Estas gráficas podrían proporcionar una visión preliminar de las potenciales relaciones entre las series. 
+
+# Análisis de correlación cruzada
+
+Con el objetivo de explorar relaciones lineales (con las series con la mayor estacionariedad posible, al menos sin estacionalidad y diferenciadas).  
+
+## ACF & PACF & CCF
+
+```{r}
+#| label: acf-pacf-ccf
+
+suic_ipc_tsbl %>% ACF(suic_dif, lag_max = 20) %>% 
+  autoplot()
+
+suic_ipc_tsbl %>% ACF(vmipc_dif, lag_max = 20) %>% 
+  autoplot()
+
+suic_ipc_tsbl %>% CCF(suic_dif, vmipc_dif, lag_max = 20) %>% 
+  autoplot()
+
+suic_ipc_tsbl %>% PACF(suic_dif, lag_max = 20) %>% 
+  autoplot()
+
+suic_ipc_tsbl %>% PACF(vmipc_dif, lag_max = 20) %>% 
+  autoplot()
+
+```
+
+**Nota**: se observa una correlación positiva —estadísticamente significativa— entre las tasas de suicidio y la variación mensual del IPC rezagada 20 meses. Esto se podría interpretar de la siguiente manera: *una mayor aceleración en el incremento del IPC 20 meses atrás se relacionaría con un mayor crecimiento de las tasas de suicidio de hoy*. 
+
+El pico negativo en +19 se podría interpretar así: aumentos actuales en la tasa mensual de suicidio tienden a ir seguidos, 19 meses después, por aumentos en la aceleración del IPC. Sin embargo, esta interpretación no sería de mucha utilidad en este caso. 
+
+### Otra forma
+
+```{r}
+#| label: acf-pacf-ccf(2)
+
+library(MTS)
+m_ipc <- cbind(Suicidio = suic_ipc_tsbl$suic_dif, vmIPC = suic_ipc_tsbl$vmipc_dif)
+MTSplot(m_ipc, caltime = suic_ipc_tsbl$date_month)
+
+ccf(suic_ipc_tsbl$vmipc_dif, suic_ipc_tsbl$suic_dif, lag.max = 20, main = "Suicidios vs. rezagos de la vmIPC", na.action = na.omit)
+acf(m_ipc, lag = 20, na.action = na.omit)
+pacf(m_ipc, lag = 20, na.action = na.omit)
+
+```
+
+Se debe anotar que se invirtió el orden de las variables en el comando `ccf()`, ya que esta función toma los rezagos de la primera variable (la que se localiza a la izquierda): 
+
+`The lag k value returned by ccf(x, y) estimates the correlation between x[t+k] and y[t].`
+
+Con la función `CCF()` es al revés, los rezagos de la segunda (la de la derecha). 
+
+## Matrices de correlación cruzada
+
+```{r}
+#| label: ccm
+
+#CCM
+m_ipc1 <- na.omit(m_ipc) #(?)
+ccm(m_ipc1, lag = 20, level = F, output = T) #p-value Ljung-Box (H0: independence)
+
+```
+
+Esta gráfica presenta los valores *p* de las pruebas de Ljung-Box para cada rezago, en donde la hipótesis nula es *independencia*. En este caso, se rechaza la independencia, lo cual sugiere presencia de correlación lineal en el rezago 20, acorde con lo que ya se ha mencionado. 
+
+## Gráficos de dispersión
+
+Debido a que no se han encontrado correlaciones lineales a corto plazo (rezagos cercanos), se pueden explorar relaciones no lineales a través de los gráficos de dispersión de una serie vs. los rezagos de la otra serie. No obstante, las relaciones que no sean lineales serían más difíciles de explicar. 
+
+```{r}
+#| label: scatter
+
+library(astsa)
+
+#renombrar
+ipcmv_dif <- na.omit(suic_ipc_tsbl$vmipc_dif)
+sui_dif <- na.omit(suic_ipc_tsbl$suic_dif)
+
+astsa::lag2.plot(ipcmv_dif, sui_dif, max.lag = 6, col = "dodgerblue3")
+astsa::lag2.plot(ipcmv_dif, sui_dif, max.lag = 12, col = "dodgerblue3")
+astsa::lag2.plot(ipcmv_dif, sui_dif, max.lag = 20, col = "dodgerblue3")
+
+```
+
+De nuevo, al rezago 20 pareciera existir una correlación lineal débil entre la serie de suicidios y los rezagos de la vmIPC. **No pareciera existir relaciones no lineales**. 
+
+Con estos hallazgos, el siguiente paso es hacer el *preblanqueamiento* de las series para verificar que las correlaciones significativas, en efecto, sean producto de la correlación entre las dos series, y no se deban a relaciones espurias. 
+
+## Preblanqueamiento de las series
+
+El preblanqueamiento elimina el efecto de la autocorrelación propia de cada serie —por ejemplo, la autocorrelación de la serie de suicidios dentro de ella misma—, para que no interfiera induciendo correlaciones que no existen entre las dos series en estudio (espurias). Las series que entran al proceso de preblanqueamiento deben ser estacionarias o lo más estacionarias que sea posible. 
+
+La idea es que los modelos que se ajusten tengan en cuenta los gráficos de ACF y PACF de las series. 
+
+```{r}
+#| label: pre-white
+
+#getAnywhere("coeftest")
+
+#PRIMER MODELO
+ipc_model1 <- forecast::Arima(suic_ipc_tsbl$vmipc_dif, order = c(0,0,1), include.mean = FALSE, seasonal = c(0, 0, 0), include.drift = F)
+lmtest::coeftest(ipc_model1)
+ipc_res1 <- residuals(ipc_model1)
+
+#coeficiente
+theta <- coef(ipc_model1)[c("ma1")]
+theta
+
+#entonces, el coeficiente del ma(1) se introduce en el modelo para la otra serie, a través de 'fixed'
+#'fixed' tendrá tantas entradas como coeficientes de la salida del modelo; en este caso es una sola: la del ma1
+suic_model1 <- forecast::Arima(suic_ipc_tsbl$suic_dif, order = c(0,0,1), include.mean = FALSE, seasonal = c(0, 0, 0), include.drift = F, fixed = theta)
+suic_res1 <- residuals(suic_model1)
+
+
+#SEGUNDO MODELO
+ipc_model2 <- forecast::Arima(suic_ipc_tsbl$vmipc_dif, order = c(3,0,0), include.mean = FALSE, seasonal = c(0, 0, 0), include.drift = F)
+lmtest::coeftest(ipc_model2)
+ipc_res2 <- residuals(ipc_model2)
+
+#coeficientes
+phi <- coef(ipc_model2)[c("ar1","ar2","ar3")]
+phi
+
+suic_model2 <- forecast::Arima(suic_ipc_tsbl$suic_dif, order = c(3,0,0), include.mean = FALSE, seasonal = c(0, 0, 0), include.drift = F, fixed = phi)
+suic_res2 <- residuals(suic_model2)
+
+```
+
+Con los residuales de estos modelos se procede a verificar la correlación cruzada. 
+
+## Nuevo CCF con los residuales
+
+```{r}
+#| label: ccf_res
+
+#original
+ccf(suic_ipc_tsbl$vmipc_dif, suic_ipc_tsbl$suic_dif, lag.max = 20, main = "Suicidios vs. rezagos de la vmIPC", na.action = na.omit)
+
+#después del preblanqueamiento
+ccf(ipc_res1, suic_res1, na.action = na.omit, lag.max = 20)
+ccf(ipc_res2, suic_res2, na.action = na.omit, lag.max = 20)
+
+```
+
+### Otra forma (automática)
+
+Esta forma selecciona automáticamente el modelo AR(p) que mejor se ajusta.
+
+```{r}
+#| label: pre-white2
+
+ipc_dif <- na.omit(suic_ipc_tsbl$vmipc_dif)
+sui_dif <- na.omit(suic_ipc_tsbl$suic_dif)
+
+library(astsa)
+pre.white(ipc_dif, sui_dif, diff = FALSE, max.lag = 20, main = "sui vs. ipc", plot = TRUE, order.max = 4)
+
+```
+
+**Se puede ver que las correlaciones significativas persisten después del preblanqueamiento**, mediante ambos métodos. 
+
+# Explorar dependencia entre las dos series: correlación de distancia
+
+## Algunos aspectos teóricos
+
+For a *strictly stationary* multivariate time series, the pairwise auto-distance correlation function between $X_{t;r}$ and $X_{t-|j|;m}$ is denoted by $R_{rm}(j)$ and it is defined as the positive square root of
+
+$$
+R_{rm}(j) = \frac{V^2_{rm}(j)}{\sqrt{V^2_{rr}(0)}{\sqrt{V^2_{mm}(0)}}}, \quad r, m = 1,...,d, \; j = 0, \pm1, \pm2, ...
+$$
+
+$V^2_{rm}(j)$: pairwise auto-distance covariance function (squared) between $X_{t;r}$ and $X_{t-|j|;m}$; r, m are the dimensions *(d)* of the vector $X_t$, which is the multivariate time series vector ($d = 2$ → two-series matrix 2x2); j is the lag. 
+
+$X_{t;r}$ and $X_{t-|j|;m}$ are independent if and only if $V^2_{rm}(j) = 0$. 
+
+$V_{rm}(j)$ measures the dependence of $X_{t;r}$ **on ("con respecto a")** $X_{t-|j|;m}$; if $V_{rm}(j) > 0$, we say that the series $X_{t;m}$ **leads ("guía-conduce")** the series $X_{t;r}$ at lag *j*; $V_{rm}(j)$ measures the dependence of $X_{t;r}$ **on the past values** of $X_{t-|j|;m}$. 
+
+Then, the ADCF matrix of $X_t$ is defined as
+
+$$
+R(j) = \left[ R_{rm}(j) \right]_{r,m = 1}^{d} \;, \quad j = 0, \pm1, \pm2,...
+$$
+
+In `dCovTS`, based on the definitions of $V_X()$ and $R_X()$, we observe that (univariate case)
+
+$$
+\widehat{V^2_X}(j) = \widehat{V^2_X}(-j) \quad and \quad \widehat{R^2_X}(j) = \widehat{R^2_X}(-j)
+$$
+
+and thus results based **on negative lags** are omitted from the package (the dependence is the same).
+
+Main reference: `Pitsillou M. Testing serial dependence by the distance covariance function: University of Cyprus; 2016.`
+
+## Correlación de distancia
+
+```{r}
+#| label: dcorr
+
+library(dCovTS)
+
+#m_ipc <- cbind(suicides = suic_ipc_tsbl$suic_diff, IPC = suic_ipc_tsbl$ipcmv_diff)
+m_ipc
+
+#Auto-Distance Correlation Matrix (Matriz de autocorrelación de distancia
+#Multivariate time series (m))
+dCovTS::mADCF(na.omit(m_ipc), lags = 1) #R^2(X_t,X_{t-j})
+dCovTS::mADCF(na.omit(m_ipc), lags = 2)
+dCovTS::mADCF(na.omit(m_ipc), lags = c(1, 2, 6, 12))
+
+#Distance cross-correlation plot (Gráfico de correlación cruzada de distancia)
+dCovTS::mADCFplot(na.omit(m_ipc), MaxLag = 2)
+dCovTS::mADCFplot(na.omit(m_ipc), MaxLag = 12)
+dCovTS::mADCFplot(na.omit(m_ipc), MaxLag = 20)
+
+#Distance Correlation test of independence in multivariate time series (H0 = independence)
+#p = lag max / b = bootstrap replicates
+mADCFtest(na.omit(m_ipc), p = 5.74, type = "bartlett", b = 499) 
+
+```
+
+Hasta el rezago 12 no se observan relaciones de dependencia entre la serie de suicidios y los rezagos de la vmIPC. *Probablemente se rechaza la hipótesis nula de independencia por la significancia al rezago 20*. ¿Para el contexto del suicidio este rezago resultaría relevante?
+
+```{r}
+#| label: cross-quantilogram
+#| include: false
+
+library(quantilogram)
+ls("package:quantilogram") #see all functions
+
+#Cross-quantilogram at the k lag order
+quantilogram::crossq(as.matrix(na.omit(m_ipc)), vecA = c(0.1, 0.5), k = 12) #0.1 = p10; 0.5 = p50 (median)
+
+#Critical values for the cross-quantilogram (using the stationary bootstrap)
+quantilogram::crossq.sb(as.matrix(na.omit(m_ipc)), vecA = c(0.1, 0.5), k = 12, gamma = 1/10, Bsize = 100, sigLev = 0.05) #k = lag; "gamma" and "Bsize" are bootstrap parameters; "sigLev" = statistical significance level
+
+#Graphs
+##Heat-map
+quantilogram::crossq.heatmap(as.matrix(na.omit(m_ipc)), vec.q = seq(0.1, 0.99, 0.1), k = 12, Bsize = 100, sigLev = 0.05, var1_name = "Suicide", var2_name = "IPC")
+
+##Partial cross-quantilograms up to the lag order users specify
+quantilogram::crossq.max(as.matrix(na.omit(m_ipc)), vecA = c(0.1, 0.5), Kmax = 12)
+
+##Plot of the cross-quantilogram with confidence intervals
+result = quantilogram::crossq.plot(as.matrix(na.omit(m_ipc)), vecA = c(0.1, 0.9), Kmax = 12, Bsize = 200, ribbon_color = "lightsteelblue1", ribbon_alpha = 0.7, bar_color = "royalblue3", bar_width = 0.25)
+plot(result$plot)
+
+##Partial cross-quantilograms up to the lag order users specify
+quantilogram::crossq.max.partial(as.matrix(na.omit(m_ipc)), vecA = c(0.1, 0.5), Kmax = 12)
+
+
+#Ref: Han, H., Linton, O., Oka, T., and Whang, Y. J. (2016). "The cross-quantilogram: Measuring quantile #dependence and testing directional predictability between time series." Journal of Econometrics, 193(1), #251-270.
+
+```
+
+# Regresión de series de tiempo
+
+The model we want to fit is the following:
+
+$$
+y_t = c + \beta_0x_t + \beta_1x_{t-1} + \cdots + \beta_{k}x_{t-k} + \eta_t,
+$$
+
+where the error term of the regression is such that:
+
+$$
+\eta_t\sim ARIMA(p,d,q)
+$$
+
+So, the lag(0) model is:
+
+$$
+y_t=c+\beta_0x_t+\eta_t
+$$
+
+and,
+
+$$
+\eta_t\sim ARIMA(0,0,0)
+$$
+
+Now, the lag(1) model:
+
+$$
+y_t = c + \beta_0x_t + \beta_1x_{t-1} + \eta_t
+$$
+
+and,
+
+$$
+\eta_t\sim ARIMA(1,0,0)
+$$
+
+## Método 1
+
+Modelando directamente las series sin estacionalidad y diferenciadas; `suic_dif` tiene transformación log. 
+
+```{r}
+#| label: time_reg1
+
+#recordar que se deben tener en cuenta los rezagos de interés
+
+fit <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(suic_dif ~ pdq(0) + vmipc_dif),
+  lag1 = ARIMA(suic_dif ~ pdq(0) + vmipc_dif + lag(vmipc_dif)),
+  lag12 = ARIMA(suic_dif ~ pdq(0) + vmipc_dif + lag(vmipc_dif) + lag(vmipc_dif, 12)),
+  lag20 = ARIMA(suic_dif ~ pdq(0) + vmipc_dif + lag(vmipc_dif) + lag(vmipc_dif, 12) + lag(vmipc_dif, 20)), 
+  lag_solo20 = ARIMA(suic_dif ~ pdq(0) + lag(vmipc_dif, 20))
+  )
+
+glance(fit) #lag0
+fit |> dplyr::select(lag0) |> 
+  coef() 
+fit |> dplyr::select(lag1) |> 
+  coef() 
+fit |> dplyr::select(lag12) |> 
+  coef() 
+fit |> dplyr::select(lag20) |> 
+  coef() 
+fit |> dplyr::select(lag_solo20) |> 
+  coef() 
+
+#Residuales (errores de la regresión)
+res0 <- residuals(fit |> 
+                    dplyr::select(lag0), type = "regression")
+
+acf0 <- res0 |>
+  ACF() |>
+  autoplot() + 
+  ggtitle("ACF")
+
+pacf0 <- res0 |>
+  PACF() |>
+  autoplot() + 
+  ggtitle("PACF")
+
+library(patchwork)
+acf0 / pacf0 #suggests ma(1) or AR(4) (?)
+
+```
+
+Los errores de la regresión aún tienen autocorrelación por explicar, entonces se procede a modelarlos con un ARIMA. 
+
+```{r}
+#| label: time_reg1_dos
+
+fit1 <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(suic_dif ~ pdq(3,0,0) + vmipc_dif),
+  lag1 = ARIMA(suic_dif ~ pdq(3,0,0) + vmipc_dif + lag(vmipc_dif)),
+  lag12 = ARIMA(suic_dif ~ pdq(3,0,0) + vmipc_dif + lag(vmipc_dif) + lag(vmipc_dif, 12)),
+  lag20 = ARIMA(suic_dif ~ pdq(3,0,0) + vmipc_dif + lag(vmipc_dif) + lag(vmipc_dif, 12) + lag(vmipc_dif, 20)), 
+  lag_solo20 = ARIMA(suic_dif ~ pdq(3,0,0) + lag(vmipc_dif, 20))
+  )
+
+#Best model (AIC)
+glance(fit1) #lag0
+
+fit_best <- suic_ipc_tsbl |> model(
+  ARIMA(suic_dif ~ pdq(3,0,0) + vmipc_dif))
+
+report(fit_best)
+
+#coeficientes
+fit_best |> coef() #vmIPC no significativo
+fit1 |> dplyr::select(lag20) |>
+  coef() #lag20 resulta significativo
+
+#Residuales
+bind_rows(`Regression residuals` = as_tibble(residuals(fit_best, type = "regression")),
+          `ARIMA residuals` = as_tibble(residuals(fit_best, type = "innovation")),.id = "type") |> 
+  mutate(type = factor(type, levels = c("Regression residuals", "ARIMA residuals"))) |>
+  ggplot(aes(x = date_month, y = .resid)) + 
+  geom_line() + facet_grid(vars(type))
+
+#Residuals fit_best
+resid_reg <- fit_best |> 
+  residuals(type = "regression")
+
+resid_inn <- fit_best |>
+  residuals(type = "innovation")
+
+residuales_reg <- resid_reg |> 
+  dplyr::select(".resid") |> 
+  drop_na()
+
+residuales_inn <- resid_inn |> 
+  dplyr::select(".resid") |> 
+  drop_na()
+
+#ACF
+acf(residuales_reg) ###These could be autocorrelated
+acf(residuales_inn) ###These should NOT be autocorrelated (white noise)
+
+#pruebas sobre los innovacionales (ARIMA)
+tseries::jarque.bera.test(residuales_inn$.resid)
+stats::Box.test(residuales_inn$.resid, lag = 20, type = "Ljung-Box")
+t.test(residuales_inn$.resid)
+
+```
+
+## Método 2
+
+Modelando a partir de las series originales, pero introduciendo los parámetros a modelar de forma "manual". 
+
+```{r}
+#| label: time_reg_orig
+
+fit_orig <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + season() + PDQ(0, 0, 0)),
+  lag1 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + lag(vm_ipc) + season() + PDQ(0, 0, 0)),
+  lag12 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + lag(vm_ipc) + lag(vm_ipc, 12) + season() + PDQ(0, 0, 0)),
+  lag20 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + lag(vm_ipc) + lag(vm_ipc, 12) + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0)),
+  lag_solo20 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0))
+    )
+  
+glance(fit_orig) #lag0
+fit_orig |> dplyr::select(lag0) |> 
+  coef() 
+fit_orig |> dplyr::select(lag1) |> 
+  coef() 
+fit_orig |> dplyr::select(lag12) |> 
+  coef() 
+fit_orig |> dplyr::select(lag20) |> 
+  coef() 
+fit_orig |> dplyr::select(lag_solo20) |> 
+  coef() 
+
+#Residuales (errores de la regresión)
+res0_orig <- residuals(fit_orig |> 
+                    dplyr::select(lag0), type = "regression")
+
+acf0_orig <- res0_orig |>
+  ACF() |>
+  autoplot() + 
+  ggtitle("ACF")
+
+pacf0_orig <- res0_orig |>
+  PACF() |>
+  autoplot() + 
+  ggtitle("PACF")
+
+library(patchwork)
+acf0_orig / pacf0_orig #sugiere AR(3) (?)
+
+```
+
+Los errores de la regresión aún tienen autocorrelación por explicar, entonces se procede a modelarlos con un ARIMA. 
+
+```{r}
+#| label: time_reg_orig2
+
+fit_orig1 <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + season() + PDQ(0, 0, 0)),
+  lag1 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + lag(vm_ipc) + season() + PDQ(0, 0, 0)),
+  lag12 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + lag(vm_ipc) + lag(vm_ipc, 12) + season() + PDQ(0, 0, 0)),
+  lag20 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + lag(vm_ipc) + lag(vm_ipc, 12) + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0)),
+  lag_solo20 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0))
+    )
+
+#Best model (AIC)
+glance(fit_orig1) #lag0
+
+fit_best_orig <- suic_ipc_tsbl |> model(
+  ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + season() + PDQ(0, 0, 0)))
+
+report(fit_best_orig)
+
+#coeficientes
+fit_best_orig |> coef() #vmIPC no significativo
+fit_orig1 |> dplyr::select(lag20) |>
+  coef() #lag20 de vmIPC significativo
+
+#Residuales
+bind_rows(`Regression residuals` = as_tibble(residuals(fit_best_orig, type = "regression")),
+          `ARIMA residuals` = as_tibble(residuals(fit_best_orig, type = "innovation")),.id = "type") |> 
+  mutate(type = factor(type, levels = c("Regression residuals", "ARIMA residuals"))) |>
+  ggplot(aes(x = date_month, y = .resid)) + 
+  geom_line() + facet_grid(vars(type))
+
+#Residuals fit_best
+resid_reg_orig <- fit_best_orig |> 
+  residuals(type = "regression")
+
+resid_inn_orig <- fit_best_orig |>
+  residuals(type = "innovation")
+
+residuales_reg_orig <- resid_reg_orig |> 
+  dplyr::select(".resid") |> 
+  drop_na()
+
+residuales_inn_orig <- resid_inn_orig |> 
+  dplyr::select(".resid") |> 
+  drop_na()
+
+#ACF
+acf(residuales_reg_orig) ###These could be autocorrelated
+acf(residuales_inn_orig) ###These should NOT be autocorrelated (white noise)
+
+#pruebas sobre los innovacionales (ARIMA)
+tseries::jarque.bera.test(residuales_inn_orig$.resid)
+stats::Box.test(residuales_inn_orig$.resid, lag = 20, type = "Ljung-Box")
+t.test(residuales_inn_orig$.resid)
+
+```
+
+Se emplearon estos dos métodos con el ánimo de comparar los resultados, los cuales no presentaron variaciones significativas de una u otra manera, por lo que se pudo verificar su consistencia.
+
+Solo resulta significativo el parámetro de la vmIPC al rezago 20, por lo que se pudiera decir que  *una mayor aceleración en el incremento del IPC 20 meses atrás estaría asociada a un mayor crecimiento de las tasas de suicidio de hoy*. Ahora bien, ¿este hallazgo se consideraría relevante para el comportamiento del suicidio? 
+
+## Incluyendo el efecto de la pandemia por COVID-19
+
+En este primer paso se genera la variable regresora que contiene el valor atípico (TC124) detectado para la serie de suicidios, y que corresponde al efecto de la pandemia por COVID-19. En este caso, se ajustaron los modelos por métodos diferentes —`ARIMA` y `Arima`— para corroborar la consistencia de los resultados.  
+
+```{r}
+#| label: covid19
+
+library(lmtest)
+library(tsoutliers)
+
+#suic_origen como ts
+suic_origin_ts <- ts(suic_ipc_tsbl$suic_origin, start = c(2010, 01), frequency = 12)
+
+#dummies estacionales para incluir como variable regresora
+dummies <- uroot::seasonal.dummies(suic_origin_ts)
+dumm <- dummies[,-1]
+
+tsutils::seasdummy(n = length(suic_origin_ts), y = suic_origin_ts, full = TRUE)
+
+#modelo1
+c19_model1 <- forecast::Arima(suic_origin_ts, lambda = 0, order = c(0,1,1), xreg = dumm)
+coeftest(c19_model1)
+
+#detección de outliers
+n = length(suic_origin_ts)
+resi = residuals(c19_model1)
+coef = coefs2poly(c19_model1)
+outliers = tsoutliers::locate.outliers(resi, coef)
+outliers
+#TC124 (abril de 2020)
+
+#variable regresora que captura el efecto de la pandemia
+covid19 = outliers.effects(outliers, n, weights = FALSE)
+
+#unión de variables regresoras
+reg_cd <- cbind(dumm, covid19, suic_ipc_tsbl$vm_ipc)
+reg_cd
+
+#nuevo modelo incluyendo dummies estacionales, efecto de la pandemia y vmIPC (lag = 0)
+model_reg1 <- forecast::Arima(suic_origin_ts, lambda = 0, order = c(0,1,1), xreg = reg_cd)
+coeftest(model_reg1)
+
+#o de la otra forma
+fit_reg1 <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(log(suic_origin) ~ pdq(0,1,1) + vm_ipc + covid19 + season() + PDQ(0, 0, 0)))
+
+fit_reg1 |> dplyr::select(lag0) |> 
+  coef()   
+
+#NOTA: ambos modelos dan estimadores prácticamente idénticos (se corrobora la consistencia)
+
+```
+
+Habiendo hecho este paso previo, ahora se procede a ajustar los modelos incluyendo el efecto de la pandemia por COVID-19. 
+
+### Modelos COVID-19
+
+```{r}
+#| label: covid19_mod_RB
+
+fit_covid1 <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + covid19 + season() + PDQ(0, 0, 0)),
+  lag1 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + covid19 + lag(vm_ipc) + season() + PDQ(0, 0, 0)),
+  lag12 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + covid19 + lag(vm_ipc) + lag(vm_ipc, 12) + season() + PDQ(0, 0, 0)),
+  lag20 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + vm_ipc + covid19 + lag(vm_ipc) + lag(vm_ipc, 12) + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0)),
+  lag_solo20 = ARIMA(log(suic_origin) ~ pdq(0,1,0) + covid19 +lag(vm_ipc, 20) + season() + PDQ(0, 0, 0))
+    )
+  
+glance(fit_covid1) #lag0
+
+fit_covid1 |> dplyr::select(lag0) |> 
+  coef() 
+fit_covid1 |> dplyr::select(lag1) |> 
+  coef() 
+fit_covid1 |> dplyr::select(lag12) |> 
+  coef() 
+fit_covid1 |> dplyr::select(lag20) |> 
+  coef() 
+fit_covid1 |> dplyr::select(lag_solo20) |> 
+  coef() 
+
+#Residuales (errores de la regresión)
+res0_covid <- residuals(fit_covid1 |> 
+                    dplyr::select(lag0), type = "regression")
+
+acf0_covid <- res0_covid |>
+  ACF() |>
+  autoplot() + 
+  ggtitle("ACF")
+
+pacf0_covid <- res0_covid |>
+  PACF() |>
+  autoplot() + 
+  ggtitle("PACF")
+
+library(patchwork)
+acf0_covid / pacf0_covid #sugiere AR(3) (?)
+
+```
+
+Los errores de la regresión aún tienen autocorrelación por explicar, entonces se procede a modelarlos con un ARIMA. 
+
+```{r}
+#| label: covid19_mod2
+
+fit_covid2 <- suic_ipc_tsbl |> model(
+  lag0 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + covid19 + season() + PDQ(0, 0, 0)),
+  lag1 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + covid19 + lag(vm_ipc) + season() + PDQ(0, 0, 0)),
+  lag12 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + covid19 + lag(vm_ipc) + lag(vm_ipc, 12) + season() + PDQ(0, 0, 0)),
+  lag20 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + covid19 + lag(vm_ipc) + lag(vm_ipc, 12) + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0)),
+  lag_solo20 = ARIMA(log(suic_origin) ~ pdq(3,1,0) + covid19 + lag(vm_ipc, 20) + season() + PDQ(0, 0, 0))
+    )
+
+#Best model (AIC)
+glance(fit_covid2) #lag0
+
+fit_best_covid <- suic_ipc_tsbl |> model(
+  ARIMA(log(suic_origin) ~ pdq(3,1,0) + vm_ipc + covid19 + season() + PDQ(0, 0, 0)))
+
+report(fit_best_covid)
+
+#coeficientes
+fit_best_covid |> coef() #vmIPC no significativo
+fit_covid2 |> dplyr::select(lag20) |>
+  coef() #lag20 de vmIPC significativo
+
+#Residuales
+bind_rows(`Regression residuals` = as_tibble(residuals(fit_best_covid, type = "regression")),
+          `ARIMA residuals` = as_tibble(residuals(fit_best_covid, type = "innovation")),.id = "type") |> 
+  mutate(type = factor(type, levels = c("Regression residuals", "ARIMA residuals"))) |>
+  ggplot(aes(x = date_month, y = .resid)) + 
+  geom_line() + facet_grid(vars(type))
+
+#Residuals fit_best
+resid_reg_covid <- fit_best_covid |> 
+  residuals(type = "regression")
+
+resid_inn_covid <- fit_best_covid |>
+  residuals(type = "innovation")
+
+residuales_reg_covid <- resid_reg_covid |> 
+  dplyr::select(".resid") |> 
+  drop_na()
+
+residuales_inn_covid <- resid_inn_covid |> 
+  dplyr::select(".resid") |> 
+  drop_na()
+
+#ACF
+acf(residuales_reg_covid) ###These could be autocorrelated
+acf(residuales_inn_covid) ###These should NOT be autocorrelated (white noise)
+
+#pruebas sobre los innovacionales (ARIMA)
+tseries::jarque.bera.test(residuales_inn_covid$.resid)
+stats::Box.test(residuales_inn_covid$.resid, lag = 20, type = "Ljung-Box")
+t.test(residuales_inn_covid$.resid)
+
+```
+
+Los coeficientes de la variable que captura el efecto de la pandemia resultaron estadísticamente significativos en todos los modelos. No obstante, **no se vieron cambios en la significancia de los coeficientes para la vmIPC**, por lo que las conclusiones con respecto a la asociación *suicidios-vmIPC* siguen siendo las mismas. 
+
+# Cointegración
+
+Se trata de otra alternativa en la búsqueda de relaciones. Se explora una relación lineal entre las dos series que sea estable en el tiempo (estacionaria). 
+
+- Se parte de las series no estacionarias (con raíz unitaria). 
+- Primero se seleccionan los rezagos que mejoran significativamente el modelo VAR ajustado a las dos series.
+- Luego con ese rezago se aplican las dos pruebas de cointegración: `eigen` y `trace`. De estas se obtiene `r` que es el rango de cointegración. 
+- Si el valor del test es mayor que los percentiles o valores críticos, entonces se rechaza la hipótesis nula sobre el rango de cointegración. 
+
+```{r}
+#| label: coint
+
+library(fUnitRoots)
+library(urca)
+library(MTS)
+
+#con las series sin estacionalidad y solo suicidio con log
+bnd = cbind(ns$vmipc_ns, ns$suic_ns_log)
+colnames(bnd) <- c("ipc", "suic")
+MTS::VARorder(bnd) #4
+
+c1 <- urca::ca.jo(bnd, type = "eigen", ecdet = "const", K = 4)
+summary(c1)
+
+c2 <- urca::ca.jo(bnd, type = "trace", ecdet = c("const"), K = 4)
+summary(c2)
+
+```
+
+En ambas pruebas no se puede rechazar la hipótesis nula. 
+
+Esto se puede replicar modelando directamente la estacionalidad: 
+
+```{r}
+#| label: coint2
+
+#con las series originales (ambas con estacionalidad)
+bnd2 = cbind(ns$vm_ipc, ns$suic_log)
+colnames(bnd2) <- c("ipc", "suic")
+MTS::VARorder(bnd2) #3
+
+co1 <- urca::ca.jo(bnd2, type = "eigen", ecdet = "const", K = 3, season = 12)
+summary(co1)
+
+co2 <- urca::ca.jo(bnd2, type = "trace", ecdet = c("const"), K = 3, season = 12)
+summary(co2)
+
+```
+
+Llama la atención que modelando la estacionalidad con `season`, para ambas pruebas se rechaza $r = 0$. 
