@@ -1,0 +1,336 @@
+---
+title: "Suicidio en Colombia y la pandemia por COVID–19"
+format: html
+editor: source
+---
+
+## Análisis de la tasa general mensual de mortalidad por suicidio en Colombia (2010–2022)
+
+## Cargar datos y paquetes necesarios
+
+```{r}
+#| label: paquetes
+#| message: false
+#| warning: false
+
+pacman::p_load(zoo, haven, dplyr, ggplot2, timetk, tsibble, readxl, fabletools, fable, lubridate, forecast, MASS, uroot, urca, feasts, seastests, aTSA, tidyr, biwavelet, flextable, janitor, scales, epikit, gtsummary, kableExtra, knitr, purrr, stringr, patchwork, cowplot, tseries, tsoutliers, anomalize, tibbletime, tsutils, astsa, fUnitRoots, MTS, tsibble, tsibbledata, lmtest)
+```
+
+```{r}
+#| label: base/serie
+
+setwd("insertar directorio")
+
+#tasa general
+general <- read_excel("tasas_ciclos.xlsx")
+general$fecha_mes <- as.Date(with(general, paste(año, mes, "01", sep = "-")), "%Y-%m-%d")
+
+general_tbl <- general |>
+  dplyr::select(fecha_mes, general) |> 
+  subset(fecha_mes >= "2010-01-01")
+
+#Objetos tbl y tsbl 2010–2022
+general_tbl1 <- general_tbl
+year_inic <- 2010
+
+general_tbl1$fecha_mes <- yearmonth(general_tbl1$fecha_mes)
+general_tsbl <- as_tsibble(general_tbl1)
+
+#ts
+suic_ts <- ts(general_tbl1$general, start = c(year_inic, 1), frequency = 12)
+
+```
+
+## Transformación de Box–Cox y diferenciación regular
+
+```{r}
+#| label: Box–Cox y diferenciación
+
+BoxCox.lambda(suic_ts)
+suic_ts_log <- box_cox_vec(suic_ts, lambda = 0)
+#0.1847464
+
+ar(diff(suic_ts_log))
+adf = ur.df(suic_ts_log, type = "none", lags = 4)
+summary(adf) 
+#no se rechaza la H0 de presencia de raíz unitaria
+
+aTSA::adf.test(suic_ts_log, nlag = 5)
+
+general_tbl <- general_tbl |>
+  mutate(tasa_general_boxcox = box_cox(general, lambda = 0))
+
+
+#Debido a que la serie tiene raíz unitaria, procedemos a eliminar la tendencia mediante diferenciación
+general_tbl <- general_tbl |> 
+  mutate(tasa_general_boxcox_dif = tasa_general_boxcox - lag(tasa_general_boxcox))
+
+#Objetos tbl y tsbl
+general_tbl1 <- general_tbl
+general_tbl1$fecha_mes <- yearmonth(general_tbl1$fecha_mes)
+general_tsbl <- as_tsibble(general_tbl1)
+
+#Objeto ts
+general_ts_log_dif <- ts(general_tsbl$tasa_general_boxcox_dif, start = c(year_inic, 1), frequency = 12)
+
+```
+
+## Gráficas de estacionalidad
+
+### Subseries mensuales
+
+```{r}
+#| label: subseries
+#| results: 'hide'
+#| message: false
+#| warning: false
+#| fig.width: 9    
+#| fig.height: 5  
+#| out.width: "100%"
+#| fig-align: "center"
+
+monthplot(general_tsbl$tasa_general_boxcox_dif, 
+          ylab = "Tasa de mortalidad por suicidio*", 
+          xlab = "Mes", 
+          col = "royalblue4",
+          col.base = "red")
+
+```
+
+### Gráfico por años
+
+```{r}
+#| label: anual
+#| results: 'hide'
+#| message: false
+#| warning: false
+#| fig.width: 9    
+#| fig.height: 5  
+#| out.width: "100%"
+#| fig-align: "center"
+
+
+#other colors
+library(RColorBrewer)
+
+color_year <- brewer.pal(12, "Paired")
+
+ggseasonplot(general_ts_log_dif, ylab = "Tasa de mortalidad por suicidio*", 
+             xlab = "Mes", 
+             season.labels = month.abb, 
+             labelgap = 0.5, 
+             main = "", 
+             col = color_year) + 
+  scale_y_continuous(n.breaks = 6) + 
+  theme(
+    legend.text = element_text(size = 11),
+    legend.title = element_text(size = 11),
+    legend.key.size = unit(1.5, "lines"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 11)
+  )
+
+```
+
+### Pruebas estadísticas para estacionalidad
+
+```{r}
+#| label: seastests
+
+fried(general_ts_log_dif, freq = 12, residuals = TRUE)
+seasdum(general_ts_log_dif, freq = 12, autoarima = TRUE)
+combined_test(general_ts_log_dif, freq = 12)
+
+```
+
+```{r}
+#| label: objetos necesarios
+
+#todas_tbl contiene todas las series originales de 2010 a 2022
+todas_tbl <- general |>
+  subset(fecha_mes >= "2010-01-01")
+
+#Objetos tbl y tsbl
+todas_tbl1 <- todas_tbl
+year_inic <- 2010
+
+todas_tbl1$fecha_mes <- yearmonth(todas_tbl1$fecha_mes)
+todas_tsbl <- as_tsibble(todas_tbl1)
+
+#objeto ts
+gen_ts <- ts(todas_tbl1$general, start = c(year_inic, 1), frequency = 12)
+
+#Box–Cox
+BoxCox.lambda(gen_ts)
+#0.1847464
+gen_ts_log <- box_cox_vec(gen_ts, lambda = 0)
+
+
+##general
+ar(diff(gen_ts_log))
+adf = ur.df(gen_ts_log, type = "none", lags = 4)
+summary(adf) 
+#no se rechaza la H0 de presencia de raíz unitaria
+
+aTSA::adf.test(gen_ts_log, nlag = 5)
+
+todas_tbl <- todas_tbl |>
+  mutate(general_boxcox = box_cox(general, lambda = 0))
+
+todas_tbl <- todas_tbl |> 
+  mutate(general_boxcox_dif = general_boxcox - lag(general_boxcox))
+
+
+todas_tbl1 <- todas_tbl
+todas_tbl1$fecha_mes <- yearmonth(todas_tbl1$fecha_mes)
+todas_tsbl <- as_tsibble(todas_tbl1)
+
+
+#objetos ts con transf. y diff
+gen_ts_log_dif <- ts(todas_tsbl$general_boxcox_dif, start = c(year_inic, 1), frequency = 12)
+
+```
+
+## Análisis de intervención
+
+### ARIMA (sin la intervención)
+
+```{r}
+#| label: ARIMA1
+
+tasa_general_ts <- ts(todas_tbl1$general, start = c(2010,01), frequency = 12)
+
+#dummies estacionales
+seasdummy(n = length(tasa_general_ts), y = tasa_general_ts, full = TRUE)
+dum1 <- uroot::seasonal.dummies(tasa_general_ts)
+dum1[,-1]
+
+#modelo sin intervención
+mod_covid_general <- Arima(tasa_general_ts, order = c(0,1,1), xreg = dum1[,-1], lambda = 0)
+
+#Coeficientes del modelo ARIMA sin la intervención
+coeftest(mod_covid_general)
+
+```
+
+### Intervención TC
+
+```{r}
+#| label: covid_gen
+#| results: 'hide'
+#| message: false
+#| warning: false
+#| fig.width: 12    
+#| fig.height: 8  
+#| out.width: "100%"
+#| fig-align: "center"
+
+#Intervención
+n = length(tasa_general_ts)
+resi = residuals(mod_covid_general)
+coef = coefs2poly(mod_covid_general)
+outliers = tsoutliers::locate.outliers(resi, coef)
+outliers
+
+#ARIMA y gráfica
+out_graf <- tso(log(tasa_general_ts), xreg = dum1[,-1], tsmethod = "arima", args.tsmethod = list(order = c(0,1,1)))
+
+op <- par(no.readonly = TRUE)
+
+#márgenes y distancias
+par(
+  mar = c(4, 4, 4, 9),   #bottom, left, top, right (del gráfico en general)
+  oma = c(2, 1.5, 2.5, 1.5),   #del título y el caption
+  mgp = c(2.5, 0.7, 0)   # distancia título/etiquetas-eje
+)
+
+plot(
+  out_graf,
+  args.lines.y       = list(col = "red3", lwd = 1.2),
+  args.lines.yadj    = list(col = "blue4", lwd = 1.2, lty = 1),
+  args.lines.effects = list(col = "green4", lwd = 1.1),
+  plot.points        = TRUE,
+  args.points        = list(pch = 23, col = "red3", cex = 1),
+  args.x.axis        = list(cex.axis = 0.9),
+  args.y.axis        = list(cex.axis = 0.9),
+  args.effects.axis  = list(cex.axis = 0.9)
+  )
+
+#ejes
+mtext("Año", side = 1, line = 4.8, cex = 0.8, adj = 0.5, font = 2)
+mtext("Log(tasa)", side = 2, line = 4.5, cex = 0.8, adj = 0.8, font = 2)
+mtext("Efecto", side = 4, line = 7.3, cex = 0.8, adj = 0.25, font = 2)
+
+#finalización
+par(op)
+
+```
+
+### ARIMA (con la intervención)
+
+```{r}
+#| label: ARIMA2
+
+#regresora
+ef_out_gen = outliers.effects(outliers, n, weights = FALSE)
+
+#regresora: efecto TC + dummies estacionales
+reg_out1_gen <- cbind(dum1[,-1], ef_out_gen)
+
+#ARIMA con la intervención
+mod_gen_int <- Arima(tasa_general_ts, order = c(0,1,1), xreg = reg_out1_gen, lambda = 0)
+
+#coeficientes del modelo ARIMA con la intervención
+coeftest(mod_gen_int)
+
+#modelos con intervención y nuevos outliers
+n = length(tasa_general_ts)
+resi2_gen = residuals(mod_gen_int)
+coef2_gen = coefs2poly(mod_gen_int)
+outliers2_gen = tsoutliers::locate.outliers(resi2_gen, coef2_gen)
+outliers2_gen
+
+```
+
+## Análisis de residuos
+
+```{r}
+#| label: residuos ARIMA2
+
+residuales <- residuals(mod_gen_int)
+residuales_int <- ts(residuales, start = c(year_inic,1), frequency = 12)
+
+#Gráficas y pruebas
+acf(residuales_int, lag.max = 30)
+pacf(residuales_int, lag.max = 30)
+plot(residuales_int)
+
+tseries::jarque.bera.test(residuales_int)
+Box.test(residuales_int,lag = 20,type = "Ljung")
+t.test(residuales_int)
+
+
+#CUSUM Y CUSUMSQ
+res=residuales_int
+cum=cumsum(res)/sd(res)
+N=length(res)
+cumq=cumsum(res^2)/sum(res^2)
+Af=0.948 ###Cuantil del 95% para la estad?stica cusum
+co=0.112465####Valor del cuantil aproximado para cusumsq para n/2 (c0=0.12010 para el caso que inicia en el 2004)
+LS=Af*sqrt(N)+2*Af*c(1:length(res))/sqrt(N)
+LI=-LS
+LQS=co+(1:length(res))/N
+LQI=-co+(1:length(res))/N
+#par(mfrow=c(2,1))
+plot(cum,type="l",ylim=c(min(LI),max(LS)),xlab="t",ylab="",main="CUSUM")
+lines(LS,type="S",col="red")
+lines(LI,type="S",col="red")
+#CUSUMSQ
+plot(cumq,type="l",xlab="t",ylab="",main="CUSUMSQ")                      
+lines(LQS,type="S",col="red")                                                                           
+lines(LQI,type="S",col="red")
+
+
+```
