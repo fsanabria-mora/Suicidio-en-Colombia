@@ -1,0 +1,1261 @@
+---
+title: "Rates_std"
+author: "Fabian Sanabria-Mora"
+format: html
+editor: source
+---
+
+# Direct rate standardisation (by age)
+
+This Quarto document presents the process of direct standardisation of suicide rates using the age-based method and the **WHO standard population** (see [WHO_std](https://cdn.who.int/media/docs/default-source/gho-documents/global-health-estimates/gpe_discussion_paper_series_paper31_2001_age_standardization_rates.pdf)). The first step was to upload the database of suicides (2004 - 2022).
+
+```{r Upload}
+
+setwd("")
+sui <- suppressWarnings(readxl::read_xlsx("datasui_0422.xlsx"))
+
+#Rename variables
+library(dplyr)
+sui <- sui %>% rename(year = año, age = edad, month = mes_sui, age_group = grupo_edad, sex = sexo, sui_zone = zona_sui)
+
+```
+
+## Step 1: Columns
+
+Columns not used for standardisation and further analysis are removed. Subcategories are renamed and variables are revised.
+
+```{r Columns}
+
+sui <- sui %>% dplyr::select(-estado_civil, -nacionalidad, -escolaridad, -ocupacion, -dia_sui, -rango_3h, -rango_6h, -municipio, -departamento, -escenario, -razon_sui, -ancestro_raza, -mecanismo)
+
+#Rename
+sui <- sui %>%
+  mutate(
+    sex = recode(sex, 
+                 "Mujer" = "Women",
+                 "Hombre" = "Men",
+                 "Sin información" = "No information"),
+    
+    month = recode(month,
+                   "Enero" = "January",
+                   "Febrero" = "February",
+                   "Marzo" = "March",
+                   "Abril" = "April",
+                   "Mayo" = "May",
+                   "Junio" = "June",
+                   "Julio" = "July",
+                   "Agosto" = "August",
+                   "Septiembre" = "September",
+                   "Octubre" = "October",
+                   "Noviembre" = "November",
+                   "Diciembre" = "December",
+                   "Sin información" = "No information"),
+    
+    sui_zone = recode(sui_zone,
+                      "Cabecera municipal" = "Urban",
+                      "Centro poblado (corregimiento, inspección de policía y caserío)" = "Rural", 
+                      "Parte rural (vereda y campo)" = "Rural",
+                      "Sin información" = "No information"),
+    
+    age_group = recode(age_group,
+                       "Sin información" = "No information"),
+  
+  )
+
+
+
+#Class "factor" and ordered
+sui <- sui %>%
+  mutate(
+    sex = factor(sex,
+                 levels = c("Women", "Men", "No information"), ordered = T),
+    
+    month = factor(month,
+                   levels = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "No information"), ordered = T),
+    
+    sui_zone = factor(sui_zone,
+                      levels = c("Rural", "Urban", "No information"), ordered = T),
+    
+  )
+
+unique(sui$year)
+class(sui$year)
+
+unique(sui$month)
+class(sui$month)
+
+unique(sui$age)
+class(sui$age)
+
+unique(sui$age_group)
+class(sui$age_group)
+
+unique(sui$sex)
+class(sui$sex)
+
+unique(sui$sui_zone)
+class(sui$sui_zone)
+
+```
+
+Note: *"Centro poblado"* and *"Parte rural"* are now called *"Rural"*.
+
+## Step 2: Age
+
+Ages are grouped according to standardisation categories.
+
+```{r Age}
+
+#Delete < 5 years old
+sui1 <- sui %>% filter(age != "0" | age != "1" | age != "2" | age != "3" | age != "4")
+unique(sui1$age)
+
+#5 - 75 and more (by decades) 
+library(epikit)
+sui_dec <- sui1 %>%
+  mutate(age_cat = age_categories(age, breakers = c(5, 15, 25, 35, 45, 55, 65, 75)))
+table(sui_dec$age_cat, useNA = "always")
+
+#as factor
+sui_dec <- sui_dec %>%
+  mutate(age_cat = factor(age_cat, 
+    levels = c("5-14", "15-24", "25-34", "35-44", "45-54", "55-64", "65-74", "75+"), ordered = T))
+
+#Delete variables
+sui_dec <- sui_dec %>% dplyr::select(-age, -age_group, -id)
+
+
+
+#5 - 60 and more (by DANE cycles)
+sui_cyc <- sui1 %>%
+  mutate(age_cat = age_categories(age, breakers = c(5, 18, 45, 60)))
+table(sui_cyc$age_cat, useNA = "always")
+
+#as factor
+sui_cyc <- sui_cyc %>%
+  mutate(age_cat = factor(age_cat, 
+    levels = c("5-17", "18-44", "45-59", "60+"), ordered = T))
+
+#Delete variables
+sui_cyc <- sui_cyc %>% dplyr::select(-age, -age_group, -id)
+
+```
+
+## Step 3: Cases
+
+Suicide cases are calculated stratified by the other variables.
+
+```{r Cases}
+
+#by decades
+sui_dec <- sui_dec %>%
+  group_by(year, month, sex, sui_zone, age_cat) %>%
+  summarise(cases = n(), .groups = "drop")
+
+#by cycles
+sui_cyc <- sui_cyc %>%
+  group_by(year, month, sex, sui_zone, age_cat) %>%
+  summarise(cases = n(), .groups = "drop")
+
+
+#distribution of "cases"
+library(ggplot2)
+cases_dist <- ggplot(sui_cyc, aes(x=cases)) + theme_bw(16) + 
+            geom_histogram(aes(y=..density..),      
+                           binwidth=1,
+                           colour="black", 
+                           fill="lightgreen") +
+            geom_density(alpha=.2, fill="#FF6666")  
+cases_dist
+
+#Gamma parameters
+MASS::fitdistr(sui_cyc$cases, "Gamma")
+
+#graph
+cases_dist + stat_function(data=sui_cyc, 
+                        fun = dgamma, 
+                        args=list(shape=0.856898696, 
+                                  rate=0.077203935),
+                        colour="darkred", 
+                        size=1.1) + 
+  stat_function(data=sui_cyc, 
+                fun = dlnorm, 
+                args=list(meanlog=mean(log(sui_cyc$cases+1)),
+                          sdlog=sd(log(sui_cyc$cases+1))),
+                colour="blue", 
+                lty=5,
+                size=1.1)  +  
+  xlim(c(-1, 60)) +
+  labs(title = "Gamma + log-normal distribution")
+
+#Conclusion: Since the interest is to capture the small amount of data observed on the left better, the gamma distribution fits better. This must be taken into account when calculating confidence intervals for suicide incidence rates.
+
+#The code was modified from: https://github.com/devanmcg/IntroRangeR/tree/master/07_DataDistributions
+
+```
+
+Note that `summarise(cases = n(), .groups = "drop")` collapses the database by counting the repetitions of each combination.
+
+## Step 4: Prepare databases (DANE and WHO)
+
+### By decades
+
+```{r Prepare databases / by decades}
+
+#DANE
+dane <- suppressWarnings(readxl::read_xlsx("proyecnacional_2003_2023.xlsx"))
+
+#Rename and recode variables
+library(dplyr)
+dane_dec <- dane %>% rename(year = "AÑO", sui_zone = "ÁREA GEOGRÁFICA")
+dane_dec <- dane_dec %>%
+  mutate(sui_zone = recode(sui_zone, "Cabecera" = "Urban", "Centros Poblados y Rural Disperso" = "Rural"))
+
+#Delete age < 5 and "Total"
+dane_dec <- dane_dec %>%
+  dplyr::select(-Hombres_0, -Hombres_1, -Hombres_2, -Hombres_3, -Hombres_4, -Mujeres_0, -Mujeres_1, -Mujeres_2, -Mujeres_3, -Mujeres_4)
+
+dane_dec <- dane_dec %>%
+  dplyr::select(-(starts_with("Total")))
+
+#Sum by categories
+#Men
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_5-14" = sum(c_across(Hombres_5:Hombres_14))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_15-24" = sum(c_across(Hombres_15:Hombres_24))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_25-34" = sum(c_across(Hombres_25:Hombres_34))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_35-44" = sum(c_across(Hombres_35:Hombres_44))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_45-54" = sum(c_across(Hombres_45:Hombres_54))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_55-64" = sum(c_across(Hombres_55:Hombres_64))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_65-74" = sum(c_across(Hombres_65:Hombres_74))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Men_75+" = sum(c_across(Hombres_75:Hombres_100))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  dplyr::select(-(starts_with("Hombres")))
+
+
+#Women
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_5-14" = sum(c_across(Mujeres_5:Mujeres_14))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_15-24" = sum(c_across(Mujeres_15:Mujeres_24))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_25-34" = sum(c_across(Mujeres_25:Mujeres_34))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_35-44" = sum(c_across(Mujeres_35:Mujeres_44))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_45-54" = sum(c_across(Mujeres_45:Mujeres_54))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_55-64" = sum(c_across(Mujeres_55:Mujeres_64))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_65-74" = sum(c_across(Mujeres_65:Mujeres_74))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  rowwise() %>%
+  mutate("Women_75+" = sum(c_across(Mujeres_75:Mujeres_100))) %>%
+  ungroup()
+
+dane_dec <- dane_dec %>%
+  dplyr::select(-(starts_with("Mujeres")))
+
+#Pivot data (wide to long)
+library(tidyr)
+dane_dec <- dane_dec %>%
+  pivot_longer(cols = `Men_5-14`:`Women_75+`, names_to = c("sex", "age_cat"), names_sep = "_", values_to = "pop")
+
+#Calculate the differences between the populations of all years
+dane_dec_diff <- dane_dec %>%
+  arrange(sex, age_cat, sui_zone, year) %>% #order by groups
+  group_by(sex, age_cat, sui_zone) %>% 
+  mutate(diff = pop - lag(pop)) %>% #subtract the value from the previous year
+  ungroup()
+
+#Divide by 12
+dane_dec_diff <- dane_dec_diff %>%
+  mutate(pop_m = diff/12)
+
+#Expand by months
+dane_dec_months <- dane_dec_diff %>%
+  mutate(month = NA) %>% #create "month" variable
+  complete(nesting(year, sex, age_cat, sui_zone, pop, pop_m), month = 1:12) #For each combination of variables, assign the rows of the 12 months
+
+#Now, in the variable "pop1" the differences in the populations will be added month by month ("pop_m"), from January to December
+dane_dec_months <- dane_dec_months %>%
+  mutate(pop1 = 0)
+
+dane_dec_months <- dane_dec_months %>%
+  arrange(year, sex, age_cat, sui_zone, month) %>%
+  group_by(year, sex, age_cat, sui_zone) %>%
+  mutate(
+    pop1 = pop + cumsum(pop_m) - pop_m
+  ) %>% #subtracting "pop_m" prevents January from being added twice
+  ungroup()
+
+#Some adjustments
+dane_dec_months <- dane_dec_months %>%
+  dplyr::select(-pop, -pop_m, -diff)
+
+dane_dec_months <- dane_dec_months %>%
+  filter(year != "2003" & year != "2023")
+
+dane_dec_months <- dane_dec_months %>%
+  filter(month != "")
+
+dane_dec_months <- dane_dec_months %>%
+  mutate(
+    month = recode(month, 
+                 "1" = "January",
+                 "2" = "February",
+                 "3" = "March",
+                 "4" = "April",
+                 "5" = "May",
+                 "6" = "June",
+                 "7" = "July",
+                 "8" = "August",
+                 "9" = "September",
+                 "10" = "October",
+                 "11" = "November",
+                 "12" = "December")
+    )
+
+
+#WHO (import from STATA.dta)
+world_pop_decades <- haven::read_dta("who_pop_5to75+.dta")
+
+world_pop_decades <- world_pop_decades %>%
+  mutate(grupo_edad = factor(grupo_edad, 
+    levels = c("1", "2", "3", "4", "5", "6", "7", "8"), ordered = T)) #convert to factor
+
+world_pop_decades <- world_pop_decades %>%
+  mutate(
+    grupo_edad = recode(grupo_edad, 
+                 `1` = "5-14",
+                 `2` = "15-24",
+                 `3` = "25-34",
+                 `4` = "35-44",
+                 `5` = "45-54",
+                 `6` = "55-64",
+                 `7` = "65-74",
+                 `8` = "75+")
+  )
+
+world_pop_decades <- world_pop_decades %>%
+  rename(age_cat = "grupo_edad") 
+
+world_pop_decades <- world_pop_decades %>%
+  rename(pop = "population") 
+
+#as dataframe
+world_pop_decades <- as.data.frame(world_pop_decades)
+
+
+```
+
+-   DANE's population projections for 2020, 2021 and 2022 are adjusted for the impact of the COVID-19 pandemic.
+-   Note that `rowwise()` allows operations per row.
+-   `names_to` creates the new variables.
+-   `names_sep` is the term that separates the two variables.
+-   `values_to` creates the column of values ("pop").
+
+### By cycles
+
+```{r Prepare databases / by cycles}
+
+#DANE
+dane <- suppressWarnings(readxl::read_xlsx("proyecnacional_2003_2023.xlsx"))
+
+#Rename and recode variables
+library(dplyr)
+dane_cyc <- dane %>% rename(year = "AÑO", sui_zone = "ÁREA GEOGRÁFICA")
+dane_cyc <- dane_cyc %>%
+  mutate(sui_zone = recode(sui_zone, "Cabecera" = "Urban", "Centros Poblados y Rural Disperso" = "Rural"))
+
+#Delete age < 5 and "Total"
+dane_cyc <- dane_cyc %>%
+  dplyr::select(-Hombres_0, -Hombres_1, -Hombres_2, -Hombres_3, -Hombres_4, -Mujeres_0, -Mujeres_1, -Mujeres_2, -Mujeres_3, -Mujeres_4)
+
+dane_cyc <- dane_cyc %>%
+  dplyr::select(-(starts_with("Total")))
+
+#Sum by categories
+#Men
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Men_5-17" = sum(c_across(Hombres_5:Hombres_17))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Men_18-44" = sum(c_across(Hombres_18:Hombres_44))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Men_45-59" = sum(c_across(Hombres_45:Hombres_59))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Men_60+" = sum(c_across(Hombres_60:Hombres_100))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  dplyr::select(-(starts_with("Hombres")))
+
+
+#Women
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Women_5-17" = sum(c_across(Mujeres_5:Mujeres_17))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Women_18-44" = sum(c_across(Mujeres_18:Mujeres_44))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Women_45-59" = sum(c_across(Mujeres_45:Mujeres_59))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  rowwise() %>%
+  mutate("Women_60+" = sum(c_across(Mujeres_60:Mujeres_100))) %>%
+  ungroup()
+
+dane_cyc <- dane_cyc %>%
+  dplyr::select(-(starts_with("Mujeres")))
+
+#Pivot data (wide to long)
+library(tidyr)
+dane_cyc <- dane_cyc %>%
+  pivot_longer(cols = `Men_5-17`:`Women_60+`, names_to = c("sex", "age_cat"), names_sep = "_", values_to = "pop")
+
+#Calculate the differences between the populations of all years
+dane_cyc_diff <- dane_cyc %>%
+  arrange(sex, age_cat, sui_zone, year) %>% #order by groups
+  group_by(sex, age_cat, sui_zone) %>% 
+  mutate(diff = pop - lag(pop)) %>% #subtract the value from the previous year
+  ungroup()
+
+#Divide by 12
+dane_cyc_diff <- dane_cyc_diff %>%
+  mutate(pop_m = diff/12)
+
+#Expand by months
+dane_cyc_months <- dane_cyc_diff %>%
+  mutate(month = NA) %>% #create "month" variable
+  complete(nesting(year, sex, age_cat, sui_zone, pop, pop_m), month = 1:12) #For each combination of variables, assign the rows of the 12 months
+
+#Now, in the variable "pop1" the differences in the populations will be added month by month ("pop_m"), from January to December
+dane_cyc_months <- dane_cyc_months %>%
+  mutate(pop1 = 0)
+
+dane_cyc_months <- dane_cyc_months %>%
+  arrange(year, sex, age_cat, sui_zone, month) %>%
+  group_by(year, sex, age_cat, sui_zone) %>%
+  mutate(
+    pop1 = pop + cumsum(pop_m) - pop_m
+  ) %>% #subtracting "pop_m" prevents January from being added twice
+  ungroup()
+
+#Some adjustments
+dane_cyc_months <- dane_cyc_months %>%
+  dplyr::select(-pop, -pop_m, -diff)
+
+dane_cyc_months <- dane_cyc_months %>%
+  filter(year != "2003" & year != "2023")
+
+dane_cyc_months <- dane_cyc_months %>%
+  filter(month != "")
+
+dane_cyc_months <- dane_cyc_months %>%
+  mutate(
+    month = recode(month, 
+                 "1" = "January",
+                 "2" = "February",
+                 "3" = "March",
+                 "4" = "April",
+                 "5" = "May",
+                 "6" = "June",
+                 "7" = "July",
+                 "8" = "August",
+                 "9" = "September",
+                 "10" = "October",
+                 "11" = "November",
+                 "12" = "December")
+    )
+
+
+#WHO (import from STATA.dta)
+world_pop_cyc <- haven::read_dta("who_pop_cycle.dta")
+
+world_pop_cyc <- world_pop_cyc %>%
+  mutate(grupo_edad = factor(grupo_edad, 
+    levels = c("1", "2", "3", "4"), ordered = T)) #convert to factor
+
+world_pop_cyc <- world_pop_cyc %>%
+  mutate(
+    grupo_edad = recode(grupo_edad, 
+                 `1` = "5-17",
+                 `2` = "18-44",
+                 `3` = "45-59",
+                 `4` = "60+")
+  )
+
+world_pop_cyc <- world_pop_cyc %>%
+  rename(age_cat = "grupo_edad") 
+
+world_pop_cyc <- world_pop_cyc %>%
+  rename(pop = "population") 
+
+#as dataframe
+world_pop_cyc <- as.data.frame(world_pop_cyc)
+
+
+```
+
+## Step 5: Merge
+
+This step consists of merging this database with population projections (DANE) and the standard population (WHO).
+
+```{r Merge}
+
+#by decades
+dec_def <- dplyr::left_join(sui_dec, dane_dec_months, by = c("year", "month", "sex", "sui_zone", "age_cat"))
+
+dec_def1 <- dplyr::left_join(dec_def, world_pop_decades, by = "age_cat")
+
+#If there are missing values in a vector, the "dsr" command does not work, so these must be removed
+dec_def1 <- dec_def1 %>%
+  filter(pop1 != "")
+#5732
+
+#as dataframe
+dec_def1 <- as.data.frame(dec_def1)
+
+#as factor (this is required for the "dsr" function)
+dec_def1 <- dec_def1 %>%
+  mutate(
+    sex = factor(sex,
+                 levels = c("Women", "Men"), ordered = T),
+    
+    month = factor(month, 
+                   levels = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "No information"), ordered = T),
+    
+    sui_zone = factor(sui_zone, 
+                      levels = c("Rural", "Urban"), ordered = T),
+    
+    age_cat = factor(age_cat, 
+                     levels = c("5-14", "15-24", "25-34", "35-44", "45-54", "55-64", "65-74", "75+"), ordered = T),
+    
+    year = factor(year,
+                  levels = c("2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022"), ordered = T)
+    
+  )
+
+
+#by cycles
+cyc_def <- dplyr::left_join(sui_cyc, dane_cyc_months, by = c("year", "month", "sex", "sui_zone", "age_cat"))
+
+cyc_def1 <- dplyr::left_join(cyc_def, world_pop_cyc, by = "age_cat")
+
+#If there are missing values in a vector, the "dsr" command does not work, so these must be removed
+cyc_def1 <- cyc_def1 %>%
+  filter(pop1 != "")
+#3284
+
+#as dataframe
+cyc_def1 <- as.data.frame(cyc_def1)
+
+#as factor (this is required for the "dsr" function)
+cyc_def1 <- cyc_def1 %>%
+  mutate(
+    sex = factor(sex,
+                 levels = c("Women", "Men"), ordered = T),
+    
+    month = factor(month, 
+                   levels = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "No information"), ordered = T),
+    
+    sui_zone = factor(sui_zone, 
+                      levels = c("Rural", "Urban"), ordered = T),
+    
+    age_cat = factor(age_cat, 
+                     levels = c("5-17", "18-44", "45-59", "60+"), ordered = T),
+    
+    year = factor(year,
+                  levels = c("2004", "2005", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "2017", "2018", "2019", "2020", "2021", "2022"), ordered = T)
+    
+  )
+
+
+```
+
+## Step 6: Standardisation
+
+Three R packages were identified to perform the standardization: `dsrTest`, `dsr` and `popEpi`. With `dsrTest`, it was not possible to calculate the rates stratified by sex and zone. With the `dsr` package, rates and CIs can be calculated (using the gamma method), nevertheless, to perform the stratification by sex and zone, it is necessary to generate **interactions** between the variables, which *apparently* modifies the results of the rates. Because of this, it was decided to use the `popEpi` package, which allows for appropriate stratification; however *"The confidence intervals are based on the normal approximation of the logarithm of the rate.The variance of the log rate that is used to derive the confidence intervals is derived using the delta method".* Because of this, confidence intervals were calculated manually by adjusting for the gamma distribution **(see step 7)**.
+
+It should be considered that: *"If the stratum-specific incidences of a population are standardized to that population's distribution, then the standardized incidence will be equal to the crude incidence for that population. Thus, a crude incidence is an average weighted by the distribution of the study population itself. A standardized incidence can be interpreted as the crude incidence in a population that has the same stratum-specific incidences as those of the observed population, but in which the distribution of the stratiﬁcation variables is given by the standard"* (Greenland S, Rothman KJ (2008) Introduction to Stratified Analysis. In: Modern Epidemiology. Wolters Kluwer - Lippincott Williams & Wilkins, Philadelphia (USA)).
+
+Additionally: - **dsr package** does not allow stratification by more than one subgroup, so `interaction` variables must be created depending on the interest. - Column 1, which corresponds to the **interactions** between year, month and another variable, must be separated into three new columns (`separate` function of `tidyr` package); this is necessary to adjust the format of the final tables.
+
+### By decades
+
+```{r by decades}
+
+
+#Example with dsr package
+#dsr package (url, no CRAN)
+#install.packages("frailtypack")
+package_url <- "https://cran.r-project.org/src/contrib/Archive/dsr/dsr_0.2.2.tar.gz"
+#install.packages(package_url, repos = NULL, type = "source")
+
+library(dsr)
+#Year
+rates_year_dec <- dsr(
+  data = dec_def1, 
+  event = cases,
+  fu = pop1,
+  subgroup = year,
+  age_cat,
+  refdata = world_pop_decades,
+  method = "gamma",
+  sig = 0.95,
+  mp = 100000,
+  decimals = 4
+)
+
+year_dec <- knitr::kable(rates_year_dec, format = "html", caption = "Suicide rates by year (per 100000)", col.names = c('year', 'suicides', 'population', 'crude_rate', '95% LCL (crude)', '95% UCL (crude)', 'std_rate', '95% LCL (std)', '95% UCL (std)'), align = 'r')
+year_dec
+
+
+#Year and month (global)
+dec_def1$year_month <- interaction(dec_def1$year, dec_def1$month, sep = "/")
+
+rates_ymonth_dec <- dsr(
+  data = dec_def1, 
+  event = cases,
+  fu = pop1,
+  subgroup = year_month,
+  age_cat,
+  refdata = world_pop_decades,
+  method = "gamma",
+  sig = 0.95,
+  mp = 100000,
+  decimals = 4
+)
+
+##New columns
+rates_ymonth_dec <- rates_ymonth_dec %>%
+  separate("Subgroup", into = c("year", "month"), sep = "/")
+rates_ymonth_dec
+
+
+
+#With popEpi
+library(popEpi)
+
+##Vector for weights population (order matters / by age_cat)
+pop_v <- c(17290, 16690, 15540, 13740, 11410, 8270, 5170, 3065)
+
+##overall
+rate_dec <- rate(data = dec_def1, obs = cases, pyrs = pop1, adjust = age_cat, weights = pop_v)
+
+##*100000
+rate_dec <- rate_dec %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rate_dec
+
+
+##year and month
+rates_yearm_dec <- rate(data = dec_def1, obs = cases, pyrs = pop1, print = list(year, month), adjust = age_cat, weights = pop_v)
+
+##delete rows if "suicides" == 0
+library(dplyr)
+rates_yearm_dec <- rates_yearm_dec %>%
+  filter(cases != 0)
+rates_yearm_dec
+
+##*100000
+rates_yearm_dec <- rates_yearm_dec %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearm_dec
+
+##table
+yearm_dec <- knitr::kable(rates_yearm_dec, format = "html", caption = "Suicide rates by year and month (per 100000)", col.names = c('year', 'month', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)'), align = 'r')
+yearm_dec
+
+
+##year, month and sex
+rates_yearms_dec <- rate(data = dec_def1, obs = cases, pyrs = pop1, print = list(year, month, sex), adjust = age_cat, weights = pop_v)
+
+##delete rows if "suicides" == 0
+library(dplyr)
+rates_yearms_dec <- rates_yearms_dec %>%
+  filter(cases != 0)
+rates_yearms_dec
+
+##*100000
+rates_yearms_dec <- rates_yearms_dec %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearms_dec
+
+##table
+yearms_dec <- knitr::kable(rates_yearms_dec, format = "html", caption = "Suicide rates by year, month and sex (per 100000)", col.names = c('year', 'month', 'sex', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)'), align = 'r')
+yearms_dec
+
+
+##year, month and zone
+rates_yearmz_dec <- rate(data = dec_def1, obs = cases, pyrs = pop1, print = list(year, month, sui_zone), adjust = age_cat, weights = pop_v)
+
+##delete rows if "suicides" == 0
+library(dplyr)
+rates_yearmz_dec <- rates_yearmz_dec %>%
+  filter(cases != 0)
+rates_yearmz_dec
+
+##*100000
+rates_yearmz_dec <- rates_yearmz_dec %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearmz_dec
+
+##table
+yearmz_dec <- knitr::kable(rates_yearmz_dec, format = "html", caption = "Suicide rates by year, month and zone (per 100000)", col.names = c('year', 'month', 'zone', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)'), align = 'r')
+yearmz_dec
+
+
+##year, month and age (crudes)
+rates_yearma_dec <- rate(data = dec_def1, obs = cases, pyrs = pop1, print = list(year, month, age_cat))
+rates_yearma_dec
+
+##*100000
+rates_yearma_dec <- rates_yearma_dec %>%
+  mutate(across(c(rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearma_dec
+
+##table
+yearma_dec <- knitr::kable(rates_yearma_dec, format = "html", caption = "Suicide rates by year, month and age groups (per 100000)", col.names = c('year', 'month', 'age', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)'), align = 'r')
+yearma_dec
+
+
+```
+
+### By cycles
+
+```{r by cycles}
+
+##Vector for weights population (order matters / by age_cat)
+pop_vc <- c(22394, 40863, 15960, 11950)
+
+##overall
+rate_cyc <- rate(data = cyc_def1, obs = cases, pyrs = pop1, adjust = age_cat, weights = pop_vc)
+
+##*100000
+rate_cyc <- rate_cyc %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rate_cyc
+
+
+##year and month
+rates_yearm_cyc <- rate(data = cyc_def1, obs = cases, pyrs = pop1, print = list(year, month), adjust = age_cat, weights = pop_vc)
+
+##delete rows if "suicides" == 0
+library(dplyr)
+rates_yearm_cyc <- rates_yearm_cyc %>%
+  filter(cases != 0)
+rates_yearm_cyc
+
+##*100000
+rates_yearm_cyc <- rates_yearm_cyc %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearm_cyc
+
+##table
+yearm_cyc <- knitr::kable(rates_yearm_cyc, format = "html", caption = "Suicide rates by year and month (per 100000)", col.names = c('year', 'month', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)'), align = 'r')
+yearm_cyc
+
+
+##year, month and sex
+rates_yearms_cyc <- rate(data = cyc_def1, obs = cases, pyrs = pop1, print = list(year, month, sex), adjust = age_cat, weights = pop_vc)
+
+##delete rows if "suicides" == 0
+library(dplyr)
+rates_yearms_cyc <- rates_yearms_cyc %>%
+  filter(cases != 0)
+rates_yearms_cyc
+
+##*100000
+rates_yearms_cyc <- rates_yearms_cyc %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearms_cyc
+
+##table
+yearms_cyc <- knitr::kable(rates_yearms_cyc, format = "html", caption = "Suicide rates by year, month and sex (per 100000)", col.names = c('year', 'month', 'sex', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)'), align = 'r')
+yearms_cyc
+
+
+##year, month and zone
+rates_yearmz_cyc <- rate(data = cyc_def1, obs = cases, pyrs = pop1, print = list(year, month, sui_zone), adjust = age_cat, weights = pop_vc)
+
+##delete rows if "suicides" == 0
+library(dplyr)
+rates_yearmz_cyc <- rates_yearmz_cyc %>%
+  filter(cases != 0)
+rates_yearmz_cyc
+
+##*100000
+rates_yearmz_cyc <- rates_yearmz_cyc %>%
+  mutate(across(c(rate.adj, SE.rate.adj, rate.adj.lo, rate.adj.hi, rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearmz_cyc
+
+##table
+yearmz_cyc <- knitr::kable(rates_yearmz_cyc, format = "html", caption = "Suicide rates by year, month and zone (per 100000)", col.names = c('year', 'month', 'zone', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)'), align = 'r')
+yearmz_cyc
+
+
+##year, month and age (crudes)
+rates_yearma_cyc <- rate(data = cyc_def1, obs = cases, pyrs = pop1, print = list(year, month, age_cat))
+rates_yearma_cyc
+
+##*100000
+rates_yearma_cyc <- rates_yearma_cyc %>%
+  mutate(across(c(rate, SE.rate, rate.lo, rate.hi), ~ . * 100000))
+rates_yearma_cyc
+
+##table
+yearma_cyc <- knitr::kable(rates_yearma_cyc, format = "html", caption = "Suicide rates by year, month and age groups (per 100000)", col.names = c('year', 'month', 'age', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)'), align = 'r')
+yearma_cyc
+
+
+```
+
+## Step 7: Confidence intervals
+
+**Theoretical foundations**
+
+"The number of deaths reported for any given age group and time period can be assumed to follow a **Poisson distribution**, which leads to exact confidence intervals (CIs) for age-specific mortality rates... Further, because the sum of independent Poisson random variables is Poisson-distributed, the crude mortality rate also has an exact CI. However, **no exact CI is known for age-adjusted mortality rates (i.e., directly standardized rates)**, because those are based on a weighted sum of Poisson random variables..."
+
+**Statistics** D: number of suicides *(count: Poisson distribution).* The mean $(E)$ and variance $(V)$ satisfy:
+
+$E(D) = \lambda P = x = V(D)$, P denotes the population denominator. The population is cancelled with the denominator of the rate, leaving the events in *t*, so the number of events $x$ is the mean and the variance.
+
+$Crude.rate = \frac{D}{P}*100000$
+
+$Pr(D \geq x|\lambda) = Pr(G \leq \lambda P|x) \; (eq.A1)$; the left side of the equation represents the probability of observing $x$ or more events given a $\lambda$ rate. Now, the right side represents the probability that the gamma variable $(G)$ takes values less than or equal to $\lambda P$, given $x$. This means there is an **equivalence** between the probability that there are at least $x$ events until time *t*, with a specific rate (Poisson), and the probability that the gamma random variable $(G)$ takes values less than or equal to the time *t* elapsed until $x$ events occur (cumulative time).
+
+```{r poisson and gamma}
+
+#cases
+x <- 143
+
+#For a range of "x" values (expected mean lambda*p)
+xr <- seq(4000, 4600, by = 10)
+
+#incidence rate
+lambda <- 0.043
+
+#persons-time
+P <- 100000
+
+#Poisson (tail complement - distribution function)
+poisson_xr <- 1 - ppois(xr - 1, lambda * P)
+
+#Gamma (distribution function)
+gamma_xr <- pgamma(lambda * P, shape = xr, scale = 1)
+
+#Results
+cat("Pr(D >= x | lambda) using Poisson:", poisson_xr, "\n")
+cat("Pr(G <= lambda * P | x) using Gamma:", gamma_xr, "\n")
+all.equal(poisson_xr, gamma_xr) #equal
+
+```
+
+$G$ is gamma-distributed with shape parameter $\alpha > 0$ and scale parameter $\beta > 0$. The parameter $\alpha$ is known as the **shape parameter**, since it most influences the peakedness of the distribution, while the parameter $\beta$ is called the **scale parameter**, since most of its influence is on the spread of the distribution. The *mean* of the gamma is $\alpha\beta$; the *variance* of the gamma distribution is $\alpha\beta^2$
+
+$$
+E(G) = \alpha\beta, \quad then \quad \alpha = \frac{E(G)}{\beta} \quad (eq.1)
+$$
+
+$$
+V(G) = \alpha\beta^2, \quad then \quad \alpha = \frac{V(G)}{\beta^2} \quad (eq.2)
+$$
+
+$$
+eq.2 \quad in \quad eq.1: \quad \frac{V(G)}{\beta^2} = \frac{E(G)}{\beta}, \quad solving \; for \; beta \quad \beta = \frac{V(G)}{E(G)} \quad (eq.3)
+$$
+
+$$
+eq.3 \quad in \quad V(G) = \alpha * \frac{V(G)^2}{E(G)^2} \quad solving \; for \; alpha \quad \alpha = \frac{E(G)^2}{V(G)} \quad (eq.4)
+$$
+
+From this equation $E(D) = \lambda P = x = V(D)$, where the expected value and variance are equal to $x$, and replacing in equations 3 and 4, we have for the gamma distribution:
+
+$$
+\alpha = x \quad and \quad \beta = 1
+$$ Then:
+
+$$
+For \; the \; rate \; R = \frac{D}{P}, \; with  \; P = p, \; y = \frac{x}{p}, \; and \; v = \frac{x}{p^2}, \; the \; eq.A1 \; becomes:
+$$
+
+$$
+Pr(R \geq y|\lambda) = Pr(Z \leq \lambda y|v), \; where \; Z =  \frac{G}{P} \; is \; gamma-distributed \; with \; mean \; y \; and \; variance \; v: \; \alpha = \frac{y^2}{v}; \; \beta = \frac{v}{y}
+$$
+
+From the theoretical developments of Fay-Feuer and Tiwari-Clegg-Zou:
+
+**Lower gamma confidence limit:** $$
+L(y;v) = G_{(\frac{y^2}{v},\frac{v}{y})}^{-1}(\frac{\alpha}{2}), \quad (eq.A2)
+$$
+
+**Upper gamma confidence limit (Fay-Feuer)** $$
+U(y;v;W_M) = G_{(\frac{(y+W_M)^2}{v+W_M^2},\frac{v+W_M^2}{y+W_M})}^{-1}(1-\frac{\alpha}{2}), \quad (eq.A3)
+$$
+
+Note: For the upper bound, *Fay-Feuer* made a discrete approximation (by summing max. weight) to the **maximum value** that $y$ could reach; thus, the equation changes (eq.A3). Additionally, *Tiwari-Clegg-Zou* made a modification:
+
+**Upper gamma confidence limit (Tiwari-Clegg-Zou)** $$
+U(\tilde{r_i};\tilde{v_i};\bar{w_i};\alpha) = \frac{\tilde{v_i}}{2\tilde{r_i}}(\chi^2_{(2\tilde{r_i}^2/{\tilde{v_i}})})^{-1}(1-\frac{\alpha}{2}), \quad (eq.A4)
+$$
+
+This equation is expressed in the **chi-square distribution** with $2\tilde{r_i}^2/\tilde{v_i}$ degrees of freedom $(\upsilon)$. We then express it in terms of the **gamma distribution** using the following relationship: "...the chi-square distribution is just a special case of the gamma distribution...", where:
+
+$$
+\alpha = \frac{\upsilon}{2} \quad and \quad \beta = 2, \; where \; \upsilon \; is \; a \; positive \; integer
+$$ Solving for alpha: $$
+\upsilon = 2\tilde{r_i}^2/\tilde{v_i}, \; \alpha = \frac{\tilde{r_i}^2}{\tilde{v_i}} \; and \; \beta = 2
+$$
+
+Then: $$
+U(\tilde{r_i};\tilde{v_i};\bar{w_i};\alpha) = \frac{\tilde{v_i}}{2\tilde{r_i}}(G_{(\frac{\tilde{r_i}^2}{\tilde{v_i}}, \; 2)}^{-1}(1-\frac{\alpha}{2}), \quad (eq.A5)
+$$
+
+The code below calculates confidence intervals (CIs) for standardized rates adjusted for the gamma distribution. The obtained values were compared with the intervals calculated using STATA's **"distrate"** command, which uses the gamma distribution and the methods of the authors mentioned. **The results for the rates and lower confidence intervals were the same. However, the upper confidence intervals differed slightly.**
+
+`References:` - `Casella, G., Berger, R. L. Common Families of Distributions.  Statistical Inference. 2 ed. USA: Duxbury; 2002.` - `Talih, M., Anderson, R. N., Parker, J. D. Evaluation of four gamma-based methods for calculating confidence intervals for age-adjusted mortality rates when data are sparse. Population Health Metrics. 2022;20(1):13.` - `Fay, M. P., Feuer, E. J. Confidence intervals for directly standardized rates: a method based on the gamma distribution. Stat Med. 1997;16(7):791-801.` - `Tiwari, R. C., Clegg, L. X., Zou, Z. Efficient interval estimation for age-adjusted cancer rates. Stat Methods Med Res. 2006;15(6):547-69.` - `Department of Statistics - The Pennsylvania State University. STAT 414: Introduction to Probability Theory Pennsylvania: The Pennsylvania State University; 2024 [Available from: https://online.stat.psu.edu/stat414/lesson/15/15.8.`
+
+```{r confidence intervals}
+
+#by cycles!!!
+alpha <- 0.05
+
+#labels
+rmod <- rates_yearm_cyc$rate.adj #rates
+emod <- rates_yearm_cyc$SE.rate.adj # ~ variance 
+
+##year and month
+###gamma parameters, using 3 and 4 equations and their equivalences
+shape_alpha_lo <- (rmod^2) / (emod^2)
+scale_beta_lo <- (emod^2) / rmod
+
+#of A5 equation
+shape_alpha_hi <- (rmod^2) / (emod^2)
+scale_beta_hi <- 2
+
+###CIs, using A2 and A5 equations
+rates_yearm_cyc$rate.adj.lo.gamma <- qgamma((alpha / 2), shape = shape_alpha_lo, scale = scale_beta_lo)
+rates_yearm_cyc$rate.adj.hi.gamma <- ((emod^2)/(2*rmod)) * (qgamma((1 - (alpha / 2)), shape = shape_alpha_hi, scale = scale_beta_hi))
+head(rates_yearm_cyc)
+
+###table
+yearm_cyc <- knitr::kable(rates_yearm_cyc, format = "html", caption = "Suicide rates by year and month (per 100000)", col.names = c('year', 'month', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)', '95% LCL (gamma_std)', '95% UCL (gamma_std)'), align = 'r')
+yearm_cyc
+
+
+##year, month and age (crude rate)
+###gamma parameters
+shape_param <- (rates_yearma_cyc$rate^2) / (rates_yearma_cyc$SE.rate^2)
+scale_param <- rates_yearma_cyc$rate / shape_param
+
+###CIs
+rates_yearma_cyc$rate.lo.gamma <- qgamma((alpha / 2), shape = shape_param, scale = scale_param)
+rates_yearma_cyc$rate.hi.gamma <- qgamma((1 - (alpha / 2)), shape = shape_param, rate = (1 / scale_param))
+head(rates_yearma_cyc)
+
+###table
+yearma_cyc <- knitr::kable(rates_yearma_cyc, format = "html", caption = "Suicide rates by year, month and age groups (per 100000)", col.names = c('year', 'month', 'age', 'suicides', 'population', 'rate', 'SE_rate', '95% LCL (crude)', '95% UCL (crude)', '95% LCL (gamma)', '95% UCL (gamma)'), align = 'r')
+yearma_cyc
+
+
+##year, month and sex
+###gamma parameters
+shape_param <- (rates_yearms_cyc$rate.adj^2) / (rates_yearms_cyc$SE.rate.adj^2)
+scale_param <- rates_yearms_cyc$rate.adj / shape_param
+
+###CIs
+rates_yearms_cyc$rate.adj.lo.gamma <- qgamma((alpha / 2), shape = shape_param, scale = scale_param)
+rates_yearms_cyc$rate.adj.hi.gamma <- qgamma((1 - (alpha / 2)), shape = shape_param, rate = (1 / scale_param))
+head(rates_yearms_cyc)
+
+###table
+yearms_cyc <- knitr::kable(rates_yearms_cyc, format = "html", caption = "Suicide rates by year, month and sex (per 100000)", col.names = c('year', 'month', 'sex', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)', '95% LCL (gamma_std)', '95% UCL (gamma_std)'), align = 'r')
+yearms_cyc
+
+
+##year, month and zone
+###gamma parameters
+shape_param <- (rates_yearmz_cyc$rate.adj^2) / (rates_yearmz_cyc$SE.rate.adj^2)
+scale_param <- rates_yearmz_cyc$rate.adj / shape_param
+
+###CIs
+rates_yearmz_cyc$rate.adj.lo.gamma <- qgamma((alpha / 2), shape = shape_param, scale = scale_param)
+rates_yearmz_cyc$rate.adj.hi.gamma <- qgamma((1 - (alpha / 2)), shape = shape_param, rate = (1 / scale_param))
+head(rates_yearmz_cyc)
+
+###table
+yearmz_cyc <- knitr::kable(rates_yearmz_cyc, format = "html", caption = "Suicide rates by year, month and zone (per 100000)", col.names = c('year', 'month', 'zone', 'suicides', 'population', 'std_rate', 'SE std_rate', '95% LCL (std)', '95% UCL (std)', 'crude_rate', 'SE crude_rate', '95% LCL (crude)', '95% UCL (crude)', '95% LCL (gamma_std)', '95% UCL (gamma_std)'), align = 'r')
+yearmz_cyc
+
+
+```
+
+## Step 8: Tables and final merge
+
+To facilitate the construction of the final tables, only the columns necessary for subsequent analysis will be kept. Then, the format is adjusted **from long to wide** `(library(tidyr))`.
+
+```{r tables}
+
+#by decades (without CIs!!!)
+##global
+ymonth_dec <- rates_yearm_dec %>%
+  dplyr::select(year, month, `rate.adj`)
+
+##sex
+ymsex_dec <- rates_yearms_dec %>%
+  dplyr::select(year, month, sex, `rate.adj`)
+
+ymsex_dec <- ymsex_dec %>%
+  pivot_wider(names_from = sex, values_from = `rate.adj`)
+
+##zone
+ymzone_dec <- rates_yearmz_dec %>%
+  dplyr::select(year, month, sui_zone, `rate.adj`)
+
+ymzone_dec <- ymzone_dec %>%
+  pivot_wider(names_from = sui_zone, values_from = `rate.adj`)
+
+##age
+ymage_dec <- rates_yearma_dec %>%
+  dplyr::select(year, month, age_cat, `rate`)
+
+ymage_dec <- ymage_dec %>%
+  pivot_wider(names_from = age_cat, values_from = `rate`)
+
+##merge (decades)
+rates_std_d1 <- dplyr::left_join(ymonth_dec, ymsex_dec, by = c("year", "month"))
+rates_std_d2 <- dplyr::left_join(rates_std_d1, ymzone_dec, by = c("year", "month"))
+rates_std_dec <- dplyr::left_join(rates_std_d2, ymage_dec, by = c("year", "month"))
+
+
+#by cycles + CIs
+##global
+ymonth_cyc <- rates_yearm_cyc %>%
+  dplyr::select(year, month, `rate.adj`, `rate.adj.lo.gamma`, `rate.adj.hi.gamma`)
+
+##sex
+ymsex_cyc <- rates_yearms_cyc %>%
+  dplyr::select(year, month, sex, `rate.adj`, `rate.adj.lo.gamma`, `rate.adj.hi.gamma`)
+
+ymsex_cyc <- ymsex_cyc %>%
+  pivot_wider(names_from = sex, values_from = c(`rate.adj`, `rate.adj.lo.gamma`, `rate.adj.hi.gamma`))
+
+##zone
+ymzone_cyc <- rates_yearmz_cyc %>%
+  dplyr::select(year, month, sui_zone, `rate.adj`, `rate.adj.lo.gamma`, `rate.adj.hi.gamma`)
+
+ymzone_cyc <- ymzone_cyc %>%
+  pivot_wider(names_from = sui_zone, values_from = c(`rate.adj`, `rate.adj.lo.gamma`, `rate.adj.hi.gamma`))
+
+##age
+ymage_cyc <- rates_yearma_cyc %>%
+  dplyr::select(year, month, age_cat, `rate`, `rate.lo.gamma`, `rate.hi.gamma`)
+
+ymage_cyc <- ymage_cyc %>%
+  pivot_wider(names_from = age_cat, values_from = c(`rate`, `rate.lo.gamma`, `rate.hi.gamma`))
+
+##merge (cycles)
+rates_std_c1 <- dplyr::left_join(ymonth_cyc, ymsex_cyc, by = c("year", "month"))
+rates_std_c2 <- dplyr::left_join(rates_std_c1, ymzone_cyc, by = c("year", "month"))
+rates_std_cyc <- dplyr::left_join(rates_std_c2, ymage_cyc, by = c("year", "month"))
+rates_std_cyc
+
+##sort the columns
+rates_std_cyc <- rates_std_cyc %>%
+  select(year, month, rate.adj, rate.adj.lo.gamma, rate.adj.hi.gamma, rate.adj_Women, rate.adj.lo.gamma_Women,
+         rate.adj.hi.gamma_Women, rate.adj_Men, rate.adj.lo.gamma_Men, rate.adj.hi.gamma_Men, rate.adj_Rural, 
+         rate.adj.lo.gamma_Rural, rate.adj.hi.gamma_Rural, rate.adj_Urban, rate.adj.lo.gamma_Urban, rate.adj.hi.gamma_Urban, 
+         `rate_5-17`, `rate.lo.gamma_5-17`, `rate.hi.gamma_5-17`, `rate_18-44`, `rate.lo.gamma_18-44`, `rate.hi.gamma_18-44`, 
+         `rate_45-59`, `rate.lo.gamma_45-59`, `rate.hi.gamma_45-59`, `rate_60+`, `rate.lo.gamma_60+`, `rate.hi.gamma_60+`)
+rates_std_cyc
+
+
+```
+
+## Step 9: Final format and Excel document
+
+```{r final format and Excel}
+
+#by decades (without CIs!!!)
+rates_std_dec <- rates_std_dec %>%
+  rename(
+    "overall" = "rate.adj",
+    "women" = "Women",
+    "men" = "Men",
+    "rural" = "Rural",
+    "urban" = "Urban"
+  ) %>%
+  
+  mutate(
+    month = case_when(
+      month == "January" ~ 1,
+      month == "February" ~ 2,
+      month == "March" ~ 3,
+      month == "April" ~ 4,
+      month == "May" ~ 5,
+      month == "June" ~ 6,
+      month == "July" ~ 7,
+      month == "August" ~ 8,
+      month == "September" ~ 9,
+      month == "October" ~ 10,
+      month == "November" ~ 11,
+      month == "December" ~ 12,
+    )
+  )
+
+##Excel
+library(openxlsx)
+book_xlsx_dec <- createWorkbook() #create book
+addWorksheet(book_xlsx_dec, "sheet1") #create sheet
+writeData(book_xlsx_dec, sheet = "sheet1", x = rates_std_dec) #export table to Excel sheet
+saveWorkbook(book_xlsx_dec, "rates_std_decades.xlsx", overwrite = T) #save Excel
+
+
+#by cycles (with CIs)
+rates_std_cyc <- rates_std_cyc %>%
+  rename(
+    "overall" = "rate.adj",
+    "95% lci_overall" = `rate.adj.lo.gamma`,
+    "95% uci_overall" = `rate.adj.hi.gamma`,
+    "women" = "rate.adj_Women",
+    "95% lci_women" = `rate.adj.lo.gamma_Women`,
+    "95% uci_women" = `rate.adj.hi.gamma_Women`,
+    "men" = "rate.adj_Men",
+    "95% lci_men" = `rate.adj.lo.gamma_Men`,
+    "95% uci_men" = `rate.adj.hi.gamma_Men`,
+    "rural" = "rate.adj_Rural",
+    "95% lci_rural" = `rate.adj.lo.gamma_Rural`,
+    "95% uci_rural" = `rate.adj.hi.gamma_Rural`,
+    "urban" = "rate.adj_Urban",
+    "95% lci_urban" = `rate.adj.lo.gamma_Urban`,
+    "95% uci_urban" = `rate.adj.hi.gamma_Urban`,
+    "5-17" = "rate_5-17",
+    "95% lci_5-17" = `rate.lo.gamma_5-17`,
+    "95% uci_5-17" = `rate.hi.gamma_5-17`,
+    "18-44" = "rate_18-44",
+    "95% lci_18-44" = `rate.lo.gamma_18-44`,
+    "95% uci_18-44" = `rate.hi.gamma_18-44`,
+    "45-59" = "rate_45-59",
+    "95% lci_45-59" = `rate.lo.gamma_45-59`,
+    "95% uci_45-59" = `rate.hi.gamma_45-59`,
+    "60+" = "rate_60+",
+    "95% lci_60+" = `rate.lo.gamma_60+`,
+    "95% uci_60+" = `rate.hi.gamma_60+`,
+    
+  ) %>%
+  
+  mutate(
+    month = case_when(
+      month == "January" ~ 1,
+      month == "February" ~ 2,
+      month == "March" ~ 3,
+      month == "April" ~ 4,
+      month == "May" ~ 5,
+      month == "June" ~ 6,
+      month == "July" ~ 7,
+      month == "August" ~ 8,
+      month == "September" ~ 9,
+      month == "October" ~ 10,
+      month == "November" ~ 11,
+      month == "December" ~ 12,
+    )
+  )
+
+##Excel with CIs
+book_xlsx_cyc1 <- createWorkbook() 
+addWorksheet(book_xlsx_cyc1, "sheet1")
+writeData(book_xlsx_cyc1, sheet = "sheet1", x = rates_std_cyc)
+saveWorkbook(book_xlsx_cyc1, "rates_std_cycles_ci.xlsx", overwrite = T)
+
+##Excel without CIs
+rates_std_cyc <- rates_std_cyc %>%
+  select(year, month, overall, women, men, rural, urban, `5-17`, `18-44`, `45-59`, `60+`)
+
+book_xlsx_cyc <- createWorkbook() 
+addWorksheet(book_xlsx_cyc, "sheet1")
+writeData(book_xlsx_cyc, sheet = "sheet1", x = rates_std_cyc)
+saveWorkbook(book_xlsx_cyc, "rates_std_cycles.xlsx", overwrite = T)
+
+#######################################################################################################################
+
+#Print other table
+##Excel
+library(openxlsx)
+book_xlsx_cyc1 <- createWorkbook() 
+addWorksheet(book_xlsx_cyc1, "sheet1")
+writeData(book_xlsx_cyc1, sheet = "sheet1", x = cyc_def1)
+saveWorkbook(book_xlsx_cyc1, "cyc_def1.xlsx", overwrite = T)
+
+```
+
+End.
